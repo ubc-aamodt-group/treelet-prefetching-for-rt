@@ -47,6 +47,7 @@
 #include "stat-tool.h"
 #include "traffic_breakdown.h"
 #include "visualizer.h"
+#include "../cuda-sim/vulkan_ray_tracing.h"
 
 #define PRIORITIZE_MSHR_OVER_WB 1
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
@@ -2864,7 +2865,7 @@ bool rt_unit::can_issue(const warp_inst_t &inst) const {
   if (n_warps >= (m_config->m_rt_max_warps)) return false;
   return m_dispatch_reg->empty() && !occupied.test(inst.latency);
 }
-        
+
 void rt_unit::issue(register_set &reg_set) {
   warp_inst_t *inst = *(reg_set.get_ready());
   inst->op_pipe = MEM__OP;
@@ -2879,6 +2880,95 @@ unsigned rt_unit::active_warps() {
     warp_ids.insert(warp_id);
   }
   return warp_ids.size();
+}
+
+void rt_unit::sort_mem_accesses(std::deque<RTMemoryTransactionRecord> &mem_accesses, std::map<uint8_t*, int> node_access_counts_per_treelet) {
+  // Labels each memory access to what treelet it belongs to
+  std::deque< std::pair<new_addr_type, uint8_t*> > root_tags; // pair<memory access, what treelet the mem access belongs to>
+  for (auto mem_access : mem_accesses) {
+    root_tags.push_back(std::make_pair(mem_access.address, VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address)));
+  }
+
+  // Groups each memory access that belong to the same treelet together
+  std::map< uint8_t*, std::deque<new_addr_type> > treelet_traversals; // map< treelet root, vector of mem accesses >
+  for (auto item : root_tags) {
+    treelet_traversals[item.second].push_back(item.first);
+  }
+
+  // Decide what the treelet order should be
+  std::deque<uint8_t*> treelet_traversal_order;
+  while (treelet_traversal_order.size() != treelet_traversals.size()) {
+    int max_nodes_in_treelet_traversal = 0;
+    uint8_t* max_treelet_traversal = NULL;
+    
+
+    for (auto treelet_traversal1 : treelet_traversals) {
+      if (find(treelet_traversal_order.begin(), treelet_traversal_order.end(), treelet_traversal1.first) != treelet_traversal_order.end()) { // if T1 is already in the order list, then move on to next node
+        continue;
+      }
+      bool valid_node = true;
+
+      for (auto treelet_traversal2 : treelet_traversals) {
+        if (treelet_traversal1 == treelet_traversal2) { // dont bother comparing against this node if its the same node
+          continue;
+        }
+        auto itr = find(treelet_traversal_order.begin(), treelet_traversal_order.end(), treelet_traversal2.first); // Checks if T2 is already in treelet_traversal_order or not
+
+        bool isChild = false; // Checks if T1 is T2's child
+        std::vector<StackEntry> treelet2_children = VulkanRayTracing::treeletIDToChildren(treelet_traversal2.first);
+        for (auto child : treelet2_children) {
+          if ((uint8_t*)treelet_traversal1.first == child.addr) {
+            isChild = true;
+            break;
+          }
+        }
+        
+        if (itr != treelet_traversal_order.end() && isChild || !isChild) { // switch up the if condition later to get rid of empty block
+          // do nothing, reverse the statement later
+        }
+        else {
+          valid_node = false;
+          break;
+        }
+      }
+
+      // treelet root 1 is not in any other treelet root's children list
+
+      // Compare T1 against the last node in the order deque
+      if (valid_node) {
+        treelet_traversal_order.push_back(treelet_traversal1.first);
+        // // Work on this better ordering later
+        // if (treelet_traversal_order.empty()) {
+        //   treelet_traversal_order.push_back(treelet_traversal1.first);
+        // }
+        // else {
+        //   if (node_access_counts_per_treelet[treelet_traversal1.first] > node_access_counts_per_treelet[treelet_traversal_order.back()]) {
+        //     // Check that the new node is not a child of the 
+        //     // Insert T1 before the last element
+        //     uint8_t* temp = treelet_traversal_order.back();
+        //     treelet_traversal_order.pop_back();
+        //     treelet_traversal_order.push_back(treelet_traversal1.first);
+        //     treelet_traversal_order.push_back(temp);
+        //   }
+        //   else {
+        //     treelet_traversal_order.push_back(treelet_traversal1.first); // Insert T1 to the back of the ordering
+        //   }
+        // }
+      }
+    }
+  }
+
+  // Create the sorted RTMemoryTransactionRecord deque
+  std::deque<RTMemoryTransactionRecord> sorted_mem_accesses;
+  for (auto treelet : treelet_traversal_order) {
+    for (auto mem_access : mem_accesses) {
+      if (treelet == VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address)) {
+        sorted_mem_accesses.push_back(mem_access);
+      }
+    }
+  }
+  assert(mem_accesses.size() == sorted_mem_accesses.size());
+  mem_accesses = sorted_mem_accesses;
 }
 
 void rt_unit::cycle() {
@@ -2904,6 +2994,7 @@ void rt_unit::cycle() {
     //   }
     //   RT_DPRINTF("\n");
     // }
+    GPGPU_Context()->the_gpgpusim->g_the_gpu->issue_cycles.push_back(GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
     
     pipe_reg.set_start_cycle(current_cycle);
     pipe_reg.set_thread_end_cycle(current_cycle);
@@ -3037,6 +3128,60 @@ void rt_unit::cycle() {
   if (!pipe_reg.empty()) m_current_warps[pipe_reg.get_uid()] = pipe_reg;
   m_dispatch_reg->clear();
 
+
+  // For Treelet Limit Study
+  // Accumulate enough warps before dispatching memory accesses so we can take advantage of treelets
+  if ((n_warps < m_config->max_warps_per_shader && n_warps < m_config->max_cta_per_core) && cycles_without_dispatching < 5000 && n_warps > 0) // TODO: should also add some cycle limit condition in case theres never enough warps to queue up
+  {
+    if (prev_n_warps != n_warps)
+      std::cout << "Queued up " << n_warps << " in SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
+    prev_n_warps = n_warps;
+    sort_msg_printed = false;
+    cycles_without_dispatching++;
+    return;
+  }
+
+  if (n_warps > 0)
+  {
+    if (!sort_msg_printed) {
+      std::cout << "Queued up " << n_warps << " in the SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << ". Start dispatching memory accesses." << std::endl;
+      sort_msg_printed = true;
+    }
+    prev_n_warps = n_warps;
+    cycles_without_dispatching = 0;
+
+    // Tally up all the different memory accesses from all warps
+    std::map<uint8_t*, int> node_access_counts_per_treelet;
+    for (auto warp_inst : m_current_warps)
+    {
+      for (int i = 0; i < 32; i++)
+      {
+        warp_inst_t::per_thread_info thread_info = warp_inst.second.get_thread_info(i);
+        for (auto mem_access : thread_info.RT_mem_accesses)
+        {
+          uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address);
+          node_access_counts_per_treelet[treelet_root_bin] += 1;
+        }
+      }
+    }
+
+    // for (auto node : node_access_counts)
+    // {
+    //   std::cout << (void*) node.first << ", " << node.second << std::endl;
+    // }
+
+    // Sort each thread's bag of memory accesses
+    for (auto warp_inst : m_current_warps)
+    {
+      for (int i = 0; i < 32; i++)
+      {
+        std::deque<RTMemoryTransactionRecord> mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+        sort_mem_accesses(mem_accesses, node_access_counts_per_treelet);
+        warp_inst.second.get_thread_info(i).RT_mem_accesses = mem_accesses; // rewrite later by passing it directly into the function
+      }
+    }
+  }
+
   // Choose next warp
   warp_inst_t rt_inst;
 
@@ -3086,6 +3231,8 @@ void rt_unit::cycle() {
         // Track number of warps in RT core
         n_warps--;
         assert(n_warps >= 0 && n_warps <= m_config->m_rt_max_warps);
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->writeback_cycles.push_back(GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+
         
         // Track completed warp uid
         completed_warp_uid = it->first;
@@ -3385,6 +3532,16 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
   new_addr_type next_addr = next_access.address;
   new_addr_type base_addr = next_access.address;
   
+  // Stats for Treelet limit study
+  std::map<new_addr_type, unsigned long long> address_cycle_pair;
+  address_cycle_pair[next_addr] = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+  GPGPU_Context()->the_gpgpusim->g_the_gpu->rt_address_cycle_pair.push_back(address_cycle_pair);
+
+  std::ofstream memoryTransactionsFile;
+  memoryTransactionsFile.open("addr_issue_cycle.txt", std::ios_base::app);
+  //memoryTransactionsFile << "address,cycle,,size,warpid" << std::endl;
+  memoryTransactionsFile << (void *)next_access.address << "," << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << "," << next_access.size << "," << inst.get_warp_id() << std::endl;
+
   // Track memory access type stats
   mem_access_q_type = static_cast<int>(next_access.type);
   

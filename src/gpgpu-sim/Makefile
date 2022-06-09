@@ -43,6 +43,19 @@ endif
 
 include ../../version_detection.mk
 
+MESA_PATH := ../../../mesa
+VULKAN_PATHS += -I$(MESA_PATH)/src/intel/
+VULKAN_PATHS += -I$(MESA_PATH)/build/src/intel/
+VULKAN_PATHS += -I$(MESA_PATH)/include/
+VULKAN_PATHS += -I$(MESA_PATH)/src/
+VULKAN_PATHS += -I$(MESA_PATH)/src/gallium/include/
+VULKAN_PATHS += -I$(MESA_PATH)/src/mesa
+VULKAN_PATHS += -I$(MESA_PATH)/src/mapi/
+VULKAN_PATHS += -I$(MESA_PATH)/src/vulkan/util/
+VULKAN_PATHS += -I$(MESA_PATH)/build/src/intel/vulkan/
+VULKAN_PATHS += -I$(MESA_PATH)/build/src/intel/vulkan/
+VULKAN_PATHS += -I$(MESA_PATH)/src/vulkan/wsi/
+
 ifeq ($(GNUC_CPP0X), 1)
     CXXFLAGS += -std=c++0x
 endif
@@ -53,7 +66,7 @@ else
 	CXXFLAGS += 
 endif
 
-CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include
+CXXFLAGS += -I$(CUDA_INSTALL_PATH)/include $(VULKAN_PATHS)
 
 POWER_FLAGS=
 ifneq ($(GPGPUSIM_POWER_MODEL),)

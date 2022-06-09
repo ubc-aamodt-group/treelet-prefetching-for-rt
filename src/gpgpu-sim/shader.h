@@ -1305,6 +1305,9 @@ class rt_unit : public pipelined_simd_unit {
         void get_L0C_sub_stats(struct cache_sub_stats &css) const;
 
         unsigned active_warps();
+
+        // For Treelets
+        void sort_mem_accesses(std::deque<RTMemoryTransactionRecord> &mem_accesses, std::map<uint8_t*, int> node_access_counts_per_treelet);
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -1359,6 +1362,11 @@ class rt_unit : public pipelined_simd_unit {
       unsigned n_warps;
 
       unsigned cacheline_count;
+
+      // Treelets
+      unsigned cycles_without_dispatching = 0;
+      bool sort_msg_printed = false;
+      unsigned int prev_n_warps = 0;
 };
 
 class ldst_unit : public pipelined_simd_unit {

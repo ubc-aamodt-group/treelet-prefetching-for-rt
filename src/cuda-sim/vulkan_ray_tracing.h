@@ -156,6 +156,23 @@ typedef struct Traversal_data {
 } Traversal_data;
 
 
+typedef struct StackEntry {
+    uint8_t* addr;
+    bool topLevel;
+    bool leaf;
+    StackEntry(uint8_t* addr, bool topLevel, bool leaf): addr(addr), topLevel(topLevel), leaf(leaf) {}
+
+    bool operator<(const StackEntry &o)  const
+    {
+        return addr < o.addr;
+    }
+
+    bool operator==(const StackEntry &o) const
+    {
+        return addr == o.addr && topLevel == o.topLevel && leaf == o.leaf;
+    }
+} StackEntry;
+
 typedef struct Vulkan_RT_thread_data {
     std::vector<variable_decleration_entry> variable_decleration_table;
 
@@ -277,6 +294,12 @@ public:
     static warp_intersection_table*** intersection_table;
     static const IntersectionTableType intersectionTableType = IntersectionTableType::Baseline;
 
+    // Treelets
+    static std::map<StackEntry, std::vector<StackEntry>> treelet_roots; // <treelet node, vector of children that belong to this treelet>, just to look up if an address is a treelet root node or not
+    static std::map<uint8_t*, std::vector<StackEntry>> treelet_roots_addr_only; // <address, vector of children that belong to this treelet>, just to look up if an address is a treelet root node or not
+    static std::map<StackEntry, std::vector<StackEntry>> treelet_child_map; // Key: a treelet root node; Value: vector of child treelets of this treelet node
+    static std::map<uint8_t*, std::vector<StackEntry>> treelet_addr_only_child_map; // Key: a treelet root node address; Value: vector of child treelets of this treelet node
+
 private:
     static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
     static float3 Barycentric(float3 p, float3 a, float3 b, float3 c);
@@ -368,6 +391,13 @@ public:
                                        uint32_t filter);
     static void pass_child_addr(void *address);
     static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards);
+    static void createTreelets(VkAccelerationStructureKHR _topLevelAS, int maxBytesPerTreelet);
+    static float calculateSAH(float3 lo, float3 hi);
+    static bool isTreeletRoot(StackEntry node);
+    static bool isTreeletRoot(uint8_t* addr);
+    static uint8_t* addrToTreeletID(uint8_t* addr);
+    static std::vector<StackEntry> treeletIDToChildren(StackEntry treelet_root);
+    static std::vector<StackEntry> treeletIDToChildren(uint8_t* treelet_root);
 };
 
 #endif /* VULKAN_RAY_TRACING_H */

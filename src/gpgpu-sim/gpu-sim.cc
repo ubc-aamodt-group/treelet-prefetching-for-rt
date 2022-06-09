@@ -1399,6 +1399,17 @@ void gpgpu_sim::gpu_print_stat() {
          (unsigned)((gpu_tot_sim_insn + gpu_sim_insn) / elapsed_time));
 
   // shader_print_l1_miss_stat( stdout );
+
+  // Tommy's RT Measurements
+  unsigned long long trace_ray_inst_latency = 0;
+  assert(writeback_cycles.size() == issue_cycles.size());
+  for (unsigned i = 0; i < writeback_cycles.size(); i++)
+  {
+    trace_ray_inst_latency += writeback_cycles[i] - issue_cycles[i];
+  }
+  fprintf(statfout, "trace_ray_inst_latency = %lld\n", trace_ray_inst_latency);
+  fprintf(statfout, "avg_trace_ray_inst_latency = %lld\n", trace_ray_inst_latency/writeback_cycles.size());
+
   shader_print_cache_stats(statfout);
   fflush(statfout);
 

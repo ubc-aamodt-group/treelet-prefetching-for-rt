@@ -168,7 +168,7 @@ enum _memory_op_t {
 };
 
 enum class TransactionType {
-    BVH_STRUCTURE,
+    BVH_STRUCTURE = 0,
     BVH_INTERNAL_NODE,
     BVH_INSTANCE_LEAF,
     BVH_PRIMITIVE_LEAF_DESCRIPTOR,
@@ -272,6 +272,8 @@ typedef struct MemoryStoreTransactionRecord {
     uint32_t size;
     StoreTransactionType type;
 } MemoryStoreTransactionRecord;
+
+struct RTMemoryTransactionRecord;
 
 struct Ray
 {
@@ -773,6 +775,12 @@ class gpgpu_t {
   unsigned max_rec_entries = 0;
   unsigned splits_table_update_active_entry = 0;
   unsigned splits_table_push_back = 0;
+
+  // Tommy's RT Measurements
+  std::vector<unsigned long long> issue_cycles;
+  std::vector<unsigned long long> writeback_cycles;
+
+  std::vector<std::map<new_addr_type, unsigned long long>> rt_address_cycle_pair;
 
   void *gpu_malloc(size_t size);
   void *gpu_mallocarray(size_t count);
