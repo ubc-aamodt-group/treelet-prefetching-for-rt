@@ -780,6 +780,9 @@ class gpgpu_t {
   std::vector<unsigned long long> issue_cycles;
   std::vector<unsigned long long> writeback_cycles;
 
+  unsigned mshr_rt_merges = 0;
+  std::map<new_addr_type, unsigned> block_addr_merge_tracker;
+
   std::vector<std::map<new_addr_type, unsigned long long>> rt_address_cycle_pair;
 
   void *gpu_malloc(size_t size);

@@ -31,6 +31,7 @@
 #include "gpu-sim.h"
 #include "hashing.h"
 #include "stat-tool.h"
+#include "../../libcuda/gpgpu_context.h"
 
 // used to allocate memory that is large enough to adapt the changes in cache
 // size across kernels
@@ -527,6 +528,11 @@ bool mshr_table::full(new_addr_type block_addr) const {
 /// Add or merge this access
 void mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
   assert(mf != NULL); //if (mf == NULL) return; TIMING_TODO: WHY bug?
+  if (mf->israytrace() && m_data.count(block_addr)) {
+    GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_rt_merges++;
+    GPGPU_Context()->the_gpgpusim->g_the_gpu->block_addr_merge_tracker[block_addr] ++;
+    RT_DPRINTF("RT Requests merged in MSHR: %d\n", GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_rt_merges);
+  }
   m_data[block_addr].m_list.push_back(mf);
   assert(m_data.size() <= m_num_entries);
   assert(m_data[block_addr].m_list.size() <= m_max_merged);

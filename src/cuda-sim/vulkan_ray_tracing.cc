@@ -380,6 +380,7 @@ float VulkanRayTracing::calculateSAH(float3 lo, float3 hi)
 
 void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, int maxBytesPerTreelet)
 {
+    unsigned total_bvh_size = 0;
     int remaining_bytes = maxBytesPerTreelet;
     std::map<StackEntry, std::vector<StackEntry>> completed_treelet_roots; // <address, placeholder>, just to look up if an address is a treelet root node or not
     std::map<uint8_t*, std::vector<StackEntry>> completed_treelet_roots_addr_only; // <address, placeholder>, just to look up if an address is a treelet root node or not
@@ -409,6 +410,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
     GEN_RT_BVH_unpack(&topBVH, (uint8_t*)_topLevelAS);
     remaining_bytes -= GEN_RT_BVH_length * 4; //_topLevelAS
     assert(remaining_bytes >= 0);
+    total_bvh_size += GEN_RT_BVH_length * 4;
     nodes_in_current_treelet.push_back(StackEntry((uint8_t*)_topLevelAS, true, false));
 
     uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
@@ -447,6 +449,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 GEN_RT_BVH_INTERNAL_NODE_unpack(&node, node_addr);
                 remaining_bytes -= GEN_RT_BVH_INTERNAL_NODE_length * 4;
                 assert(remaining_bytes >= 0);
+                total_bvh_size += GEN_RT_BVH_INTERNAL_NODE_length * 4;
                 nodes_in_current_treelet.push_back(next_node);
                 total_nodes_accessed++;
 
@@ -515,6 +518,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 GEN_RT_BVH_INSTANCE_LEAF_unpack(&instanceLeaf, leaf_addr);
                 remaining_bytes -= GEN_RT_BVH_INSTANCE_LEAF_length * 4;
                 assert(remaining_bytes >= 0);
+                total_bvh_size += GEN_RT_BVH_INSTANCE_LEAF_length * 4;
                 nodes_in_current_treelet.push_back(next_node);
                 total_nodes_accessed++;
 
@@ -527,6 +531,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 remaining_bytes -= GEN_RT_BVH_length * 4;
                 nodes_in_current_treelet.push_back(StackEntry((uint8_t *)(leaf_addr + instanceLeaf.BVHAddress), true, true));
                 assert(remaining_bytes >= 0);
+                total_bvh_size += GEN_RT_BVH_length * 4;
 
                 // std::ofstream offsetfile;
                 // offsetfile.open("offsets.txt", std::ios::app);
@@ -562,6 +567,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 GEN_RT_BVH_INTERNAL_NODE_unpack(&node, node_addr);
                 remaining_bytes -= GEN_RT_BVH_INTERNAL_NODE_length * 4;
                 assert(remaining_bytes >= 0);
+                total_bvh_size += GEN_RT_BVH_INTERNAL_NODE_length * 4;
                 nodes_in_current_treelet.push_back(next_node);
                 total_nodes_accessed++;
 
@@ -630,6 +636,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(&leaf_descriptor, leaf_addr);
                 remaining_bytes -= GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4;
                 assert(remaining_bytes >= 0);
+                total_bvh_size += GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4;
                 nodes_in_current_treelet.push_back(next_node);
 
                 if (leaf_descriptor.LeafType == TYPE_QUAD)
@@ -647,6 +654,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
 
                     remaining_bytes -= GEN_RT_BVH_QUAD_LEAF_length * 4;
                     assert(remaining_bytes >= 0);
+                    total_bvh_size += GEN_RT_BVH_QUAD_LEAF_length * 4;
                     total_nodes_accessed++;
                 }
                 else
@@ -655,6 +663,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                     GEN_RT_BVH_PROCEDURAL_LEAF_unpack(&leaf, leaf_addr);
                     remaining_bytes -= GEN_RT_BVH_PROCEDURAL_LEAF_length * 4;
                     assert(remaining_bytes >= 0);
+                    total_bvh_size += GEN_RT_BVH_PROCEDURAL_LEAF_length * 4;
                     total_nodes_accessed++;
                 }
             }
@@ -806,6 +815,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
 
     treelet_child_map = treelet_root_child_map;
     treelet_addr_only_child_map = treelet_root_addr_only_child_map;
+    std::cout << "Total BVH Size: " << total_bvh_size << " bytes" << std::endl; 
 }
 
 bool treeletsFormed = false;
@@ -833,7 +843,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     // Form Treelets
     if (!treeletsFormed)
     {
-        createTreelets(_topLevelAS, 1900); // 48*1024 aila2010 paper
+        createTreelets(_topLevelAS, 2*1024); // 48*1024 aila2010 paper
         treeletsFormed = true;
     }
 

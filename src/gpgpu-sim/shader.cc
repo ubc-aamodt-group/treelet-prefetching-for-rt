@@ -3136,17 +3136,19 @@ void rt_unit::cycle() {
     if (prev_n_warps != n_warps)
       std::cout << "Queued up " << n_warps << " in SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
     prev_n_warps = n_warps;
-    sort_msg_printed = false;
+    // sort_msg_printed = false;
     cycles_without_dispatching++;
     return;
   }
 
-  if (n_warps > 0)
+  if (n_warps > 0 && prev_n_warps != n_warps)
   {
-    if (!sort_msg_printed) {
+    prev_n_warps = n_warps;
+    // std::cout << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
+    // if (!sort_msg_printed) {
       std::cout << "Queued up " << n_warps << " in the SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << ". Start dispatching memory accesses." << std::endl;
-      sort_msg_printed = true;
-    }
+    //   sort_msg_printed = true;
+    // }
     prev_n_warps = n_warps;
     cycles_without_dispatching = 0;
 
@@ -3175,6 +3177,7 @@ void rt_unit::cycle() {
     {
       for (int i = 0; i < 32; i++)
       {
+        //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
         std::deque<RTMemoryTransactionRecord> mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
         sort_mem_accesses(mem_accesses, node_access_counts_per_treelet);
         warp_inst.second.get_thread_info(i).RT_mem_accesses = mem_accesses; // rewrite later by passing it directly into the function
