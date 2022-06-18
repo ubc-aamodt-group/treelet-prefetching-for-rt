@@ -299,6 +299,7 @@ public:
     static std::map<uint8_t*, std::vector<StackEntry>> treelet_roots_addr_only; // <address, vector of children that belong to this treelet>, just to look up if an address is a treelet root node or not
     static std::map<StackEntry, std::vector<StackEntry>> treelet_child_map; // Key: a treelet root node; Value: vector of child treelets of this treelet node
     static std::map<uint8_t*, std::vector<StackEntry>> treelet_addr_only_child_map; // Key: a treelet root node address; Value: vector of child treelets of this treelet node
+    static std::map<uint8_t*, uint8_t*> node_map_addr_only;
 
 private:
     static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
@@ -398,6 +399,7 @@ public:
     static uint8_t* addrToTreeletID(uint8_t* addr);
     static std::vector<StackEntry> treeletIDToChildren(StackEntry treelet_root);
     static std::vector<StackEntry> treeletIDToChildren(uint8_t* treelet_root);
+    static void buildNodeToRootMap();
 };
 
 #endif /* VULKAN_RAY_TRACING_H */

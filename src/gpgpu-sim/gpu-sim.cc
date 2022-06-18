@@ -1411,10 +1411,10 @@ void gpgpu_sim::gpu_print_stat() {
   fprintf(statfout, "avg_trace_ray_inst_latency = %lld\n", trace_ray_inst_latency/writeback_cycles.size());
 
   fprintf(statfout, "mshr_rt_merges = %d\n", mshr_rt_merges);
-  fprintf(statfout, "mshr merges by block_addr:\n");
-  for (auto block : block_addr_merge_tracker) {
-    fprintf(statfout, "0x%lx: %d\n", block.first, block.second);
-  }
+  // fprintf(statfout, "mshr merges by block_addr:\n");
+  // for (auto block : block_addr_merge_tracker) {
+  //   fprintf(statfout, "0x%lx: %d\n", block.first, block.second);
+  // }
 
 
   shader_print_cache_stats(statfout);

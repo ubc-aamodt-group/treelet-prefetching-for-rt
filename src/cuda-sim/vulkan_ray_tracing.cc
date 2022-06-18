@@ -80,6 +80,7 @@ std::map<StackEntry, std::vector<StackEntry>> VulkanRayTracing::treelet_roots;
 std::map<uint8_t*, std::vector<StackEntry>> VulkanRayTracing::treelet_roots_addr_only;
 std::map<StackEntry, std::vector<StackEntry>> VulkanRayTracing::treelet_child_map;
 std::map<uint8_t*, std::vector<StackEntry>> VulkanRayTracing::treelet_addr_only_child_map;
+std::map<uint8_t*, uint8_t*> VulkanRayTracing::node_map_addr_only;
 
 bool use_external_launcher = true;
 
@@ -334,26 +335,45 @@ bool VulkanRayTracing::isTreeletRoot(uint8_t* addr)
 
 uint8_t* VulkanRayTracing::addrToTreeletID(uint8_t* addr) // returns the treelet ID/address that a node belongs to
 {
-    if (treelet_roots_addr_only.count(addr)) // if node is a key then its a treelet root, so return itself
+    assert(node_map_addr_only.count(addr));
+    return node_map_addr_only[addr];
+    // if (treelet_roots_addr_only.count(addr)) // if node is a key then its a treelet root, so return itself
+    // {
+    //     return addr;
+    // }
+    // else // node is not a treelet root
+    // {
+    //     for (auto const& root : treelet_roots_addr_only)
+    //     {
+    //         for (auto node : root.second)
+    //         {
+    //             if (addr == node.addr)
+    //                 return root.first;
+    //         }
+    //     }
+
+    //     // Node not found in treelet map
+    //     std::cout << "Node " << (void*)addr << " not found in treelet map" << std::endl;
+    //     return NULL;
+    // }
+
+}
+
+
+void VulkanRayTracing::buildNodeToRootMap()
+{
+    std::map<uint8_t*, uint8_t*> node_map; // map <node, it's treelet root>
+
+    for (auto root : treelet_roots_addr_only)
     {
-        return addr;
-    }
-    else // node is not a treelet root
-    {
-        for (auto const& root : treelet_roots_addr_only)
+        node_map[root.first] = root.first; // add the root to the node map;
+        for (auto node : root.second)
         {
-            for (auto node : root.second)
-            {
-                if (addr == node.addr)
-                    return root.first;
-            }
+            node_map[node.addr] = root.first; // add the nodes to the node map
         }
-
-        // Node not found in treelet map
-        std::cout << "Node " << (void*)addr << " not found in treelet map" << std::endl;
-        return NULL;
     }
 
+    node_map_addr_only = node_map;
 }
 
 
@@ -815,7 +835,10 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
 
     treelet_child_map = treelet_root_child_map;
     treelet_addr_only_child_map = treelet_root_addr_only_child_map;
-    std::cout << "Total BVH Size: " << total_bvh_size << " bytes" << std::endl; 
+    std::cout << "Total BVH Size: " << total_bvh_size << " bytes" << std::endl;
+    std::cout << "Treelet Count: " << treelet_roots_addr_only.size() << std::endl;
+
+    buildNodeToRootMap();
 }
 
 bool treeletsFormed = false;
@@ -843,7 +866,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     // Form Treelets
     if (!treeletsFormed)
     {
-        createTreelets(_topLevelAS, 2*1024); // 48*1024 aila2010 paper
+        createTreelets(_topLevelAS, 1*1024); // 48*1024 aila2010 paper
         treeletsFormed = true;
     }
 
