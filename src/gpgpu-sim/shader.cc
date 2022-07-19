@@ -3734,7 +3734,7 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
     if (!mf->is_write()) delete mf;
     
   } else {
-    assert(status == MISS);
+    assert(status == MISS || status == HIT_RESERVED);
   }
 }
 

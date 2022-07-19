@@ -870,7 +870,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         treeletsFormed = true;
     }
 
-    int result = isTreeletRoot((uint8_t*)_topLevelAS); // test
+    //int result = isTreeletRoot((uint8_t*)_topLevelAS); // test
 
     Traversal_data traversal_data;
 

@@ -902,7 +902,7 @@ class mshr_table {
   /// Checks if there is space for tracking a new memory access
   bool full(new_addr_type block_addr) const;
   /// Add or merge this access
-  void add(new_addr_type block_addr, mem_fetch *mf);
+  bool add(new_addr_type block_addr, mem_fetch *mf);
   /// Returns true if cannot accept new fill responses
   bool busy() const { return false; }
   /// Accept a new cache fill response: mark entry ready for processing
@@ -1297,12 +1297,12 @@ class baseline_cache : public cache_t {
     return ((m_miss_queue.size() + num_miss) >= m_config.m_miss_queue_size);
   }
   /// Read miss handler without writeback
-  void send_read_request(new_addr_type addr, new_addr_type block_addr,
+  bool send_read_request(new_addr_type addr, new_addr_type block_addr,
                          unsigned cache_index, mem_fetch *mf, unsigned time,
                          bool &do_miss, std::list<cache_event> &events,
                          bool read_only, bool wa);
   /// Read miss handler. Check MSHR hit or MSHR available
-  void send_read_request(new_addr_type addr, new_addr_type block_addr,
+  bool send_read_request(new_addr_type addr, new_addr_type block_addr,
                          unsigned cache_index, mem_fetch *mf, unsigned time,
                          bool &do_miss, bool &wb, evicted_block_info &evicted,
                          std::list<cache_event> &events, bool read_only,

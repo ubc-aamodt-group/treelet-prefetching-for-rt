@@ -526,12 +526,21 @@ bool mshr_table::full(new_addr_type block_addr) const {
 }
 
 /// Add or merge this access
-void mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
+bool mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
   assert(mf != NULL); //if (mf == NULL) return; TIMING_TODO: WHY bug?
-  if (mf->israytrace() && m_data.count(block_addr)) {
+
+  // m_num_entries > 1000 is to make sure it only counts the l1d
+  bool merged = false;
+  if (m_num_entries > 1000 && m_data.count(block_addr)) {
+    GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_all_merges++;
+    RT_DPRINTF("Requests merged in MSHR: %d\n", GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_all_merges);
+    merged = true;
+  }
+  if (m_num_entries > 1000 && mf->israytrace() && m_data.count(block_addr)) {
     GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_rt_merges++;
     GPGPU_Context()->the_gpgpusim->g_the_gpu->block_addr_merge_tracker[block_addr] ++;
     RT_DPRINTF("RT Requests merged in MSHR: %d\n", GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_rt_merges);
+    merged = true;
   }
   m_data[block_addr].m_list.push_back(mf);
   assert(m_data.size() <= m_num_entries);
@@ -540,6 +549,8 @@ void mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
   if (mf->isatomic()) {
     m_data[block_addr].m_has_atomic = true;
   }
+
+  return merged;
 }
 
 /// check is_read_after_write_pending
@@ -1130,7 +1141,7 @@ void baseline_cache::display_state(FILE *fp) const {
 }
 
 /// Read miss handler without writeback
-void baseline_cache::send_read_request(new_addr_type addr,
+bool baseline_cache::send_read_request(new_addr_type addr,
                                        new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
                                        unsigned time, bool &do_miss,
@@ -1138,18 +1149,19 @@ void baseline_cache::send_read_request(new_addr_type addr,
                                        bool read_only, bool wa) {
   bool wb = false;
   evicted_block_info e;
-  send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb, e,
+  return send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb, e,
                     events, read_only, wa);
 }
 
 /// Read miss handler. Check MSHR hit or MSHR available
-void baseline_cache::send_read_request(new_addr_type addr,
+bool baseline_cache::send_read_request(new_addr_type addr,
                                        new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
                                        unsigned time, bool &do_miss, bool &wb,
                                        evicted_block_info &evicted,
                                        std::list<cache_event> &events,
                                        bool read_only, bool wa) {
+  bool mshr_merge = false;
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
   bool mshr_hit = m_mshrs.probe(mshr_addr);
   bool mshr_avail = !m_mshrs.full(mshr_addr);
@@ -1159,7 +1171,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
     else
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
-    m_mshrs.add(mshr_addr, mf);
+    mshr_merge = m_mshrs.add(mshr_addr, mf);
     do_miss = true;
 
   } else if (!mshr_hit && mshr_avail &&
@@ -1169,7 +1181,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
     else
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
-    m_mshrs.add(mshr_addr, mf);
+    mshr_merge = m_mshrs.add(mshr_addr, mf);
     if (m_config.is_streaming() && m_config.m_cache_type == SECTOR) {
       m_tag_array->add_pending_line(mf);
     }
@@ -1188,6 +1200,8 @@ void baseline_cache::send_read_request(new_addr_type addr,
     m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL);
   else
     assert(0);
+
+  return mshr_merge;
 }
 
 /// Sends write request to lower level memory (write or writeback)
@@ -1576,8 +1590,9 @@ enum cache_request_status data_cache::rd_miss_base(
   new_addr_type block_addr = m_config.block_addr(addr);
   bool do_miss = false;
   bool wb = false;
+  bool mshr_merge = false;
   evicted_block_info evicted;
-  send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb,
+  mshr_merge = send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb,
                     evicted, events, false, false);
 
   if (do_miss) {
@@ -1593,7 +1608,11 @@ enum cache_request_status data_cache::rd_miss_base(
       wb->set_parition(mf->get_tlx_addr().sub_partition);
       send_write_request(wb, WRITE_BACK_REQUEST_SENT, time, events);
     }
-    return MISS;
+
+    if (mshr_merge)
+      return HIT_RESERVED;
+    else
+      return MISS;
   }
   return RESERVATION_FAIL;
 }
@@ -1612,6 +1631,8 @@ enum cache_request_status read_only_cache::access(
       m_tag_array->probe(block_addr, cache_index, mf);
   enum cache_request_status cache_status = RESERVATION_FAIL;
 
+  bool mshr_merge = false;;
+
   if (status == HIT) {
     cache_status = m_tag_array->access(block_addr, time, cache_index,
                                        mf);  // update LRU state
@@ -1621,7 +1642,10 @@ enum cache_request_status read_only_cache::access(
       send_read_request(addr, block_addr, cache_index, mf, time, do_miss,
                         events, true, false);
       if (do_miss)
-        cache_status = MISS;
+        if (mshr_merge)
+          cache_status = HIT_RESERVED;
+        else
+          cache_status = MISS;
       else
         cache_status = RESERVATION_FAIL;
     } else {
