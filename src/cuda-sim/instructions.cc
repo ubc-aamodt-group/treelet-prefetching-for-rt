@@ -6712,9 +6712,30 @@ void load_ray_launch_id_impl(const ptx_instruction *pI, ptx_thread_info *thread)
   const operand_info &src2 = pI->src2();
 
   uint32_t v[4];
-  v[0] = thread->get_tid().x + thread->get_ctaid().x * 32;
-  v[1] = thread->get_ctaid().y;
-  v[2] = thread->get_ctaid().z;
+  warp_pixel_mapping mapping = WARP_8X4;
+
+  switch (mapping) {
+    case WARP_32X1:
+      v[0] = thread->get_tid().x + thread->get_ctaid().x * 32;
+      v[1] = thread->get_ctaid().y;
+      v[2] = thread->get_ctaid().z;
+      break;
+    case WARP_16X2:
+      v[0] = thread->get_tid().x + thread->get_ctaid().x * 16;
+      v[1] = thread->get_tid().y + thread->get_ctaid().y * 2;
+      v[2] = thread->get_ctaid().z;
+      break;
+    case WARP_8X4:
+      v[0] = thread->get_tid().x + thread->get_ctaid().x * 8;
+      v[1] = thread->get_tid().y + thread->get_ctaid().y * 4;
+      v[2] = thread->get_ctaid().z;
+      break;
+    default:
+    abort();
+  }
+  // v[0] = thread->get_tid().x + thread->get_ctaid().x * 32;
+  // v[1] = thread->get_ctaid().y;
+  // v[2] = thread->get_ctaid().z;
 
   ptx_reg_t data;
   data.u32 = v[0];

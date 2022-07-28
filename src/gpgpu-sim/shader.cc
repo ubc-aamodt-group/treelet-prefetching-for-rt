@@ -3540,10 +3540,10 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
   address_cycle_pair[next_addr] = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
   GPGPU_Context()->the_gpgpusim->g_the_gpu->rt_address_cycle_pair.push_back(address_cycle_pair);
 
-  std::ofstream memoryTransactionsFile;
-  memoryTransactionsFile.open("addr_issue_cycle.txt", std::ios_base::app);
-  //memoryTransactionsFile << "address,cycle,,size,warpid" << std::endl;
-  memoryTransactionsFile << (void *)next_access.address << "," << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << "," << next_access.size << "," << inst.get_warp_id() << std::endl;
+  // std::ofstream memoryTransactionsFile;
+  // memoryTransactionsFile.open("addr_issue_cycle.txt", std::ios_base::app);
+  // //memoryTransactionsFile << "address,cycle,,size,warpid" << std::endl;
+  // memoryTransactionsFile << (void *)next_access.address << "," << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << "," << next_access.size << "," << inst.get_warp_id() << std::endl;
 
   // Track memory access type stats
   mem_access_q_type = static_cast<int>(next_access.type);

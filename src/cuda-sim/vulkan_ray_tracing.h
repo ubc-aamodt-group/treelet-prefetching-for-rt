@@ -59,6 +59,13 @@
 
 extern bool use_external_launcher;
 
+typedef enum 
+{
+    WARP_32X1 = 0,
+    WARP_16X2,
+    WARP_8X4,
+} warp_pixel_mapping;
+
 typedef struct float4x4 {
   float m[4][4];
 

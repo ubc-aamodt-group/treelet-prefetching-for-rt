@@ -294,8 +294,27 @@ void VulkanRayTracing::init(uint32_t launch_width, uint32_t launch_height)
         return;
     _init_ = true;
 
-    uint32_t width = (launch_width + 31) / 32;
-    uint32_t height = launch_height;
+    uint32_t width;
+    uint32_t height;
+    warp_pixel_mapping mapping = WARP_8X4;
+    switch (mapping) {
+        case WARP_32X1:
+            width = (launch_width + 31) / 32;
+            height = launch_height;
+            break;
+        case WARP_16X2:
+            width = (launch_width + 15) / 16;
+            height = (launch_height + 1) / 2;
+            break;
+        case WARP_8X4:
+            width = (launch_width + 7) / 8;
+            height = (launch_height + 3) / 4;
+            break;
+        default:
+            abort();
+    }
+    // uint32_t width = (launch_width + 31) / 32;
+    // uint32_t height = launch_height;
 
     if(intersectionTableType == IntersectionTableType::Baseline)
     {
@@ -836,6 +855,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
     treelet_child_map = treelet_root_child_map;
     treelet_addr_only_child_map = treelet_root_addr_only_child_map;
     std::cout << "Total BVH Size: " << total_bvh_size << " bytes" << std::endl;
+    std::cout << "Treelet Size: " << maxBytesPerTreelet << std::endl;
     std::cout << "Treelet Count: " << treelet_roots_addr_only.size() << std::endl;
 
     buildNodeToRootMap();
@@ -866,7 +886,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     // Form Treelets
     if (!treeletsFormed)
     {
-        createTreelets(_topLevelAS, 1*1024); // 48*1024 aila2010 paper
+        createTreelets(_topLevelAS, 48*1024); // 48*1024 aila2010 paper
         treeletsFormed = true;
     }
 
@@ -1400,7 +1420,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     // Print out the transactions
     std::ofstream memoryTransactionsFile;
 
-    if (true)
+    if (false)
     {
         memoryTransactionsFile.open("memorytransactions.txt", std::ios_base::app);
         memoryTransactionsFile << "m_hw_tid:" << thread->get_hw_tid() << std::endl;
@@ -1828,16 +1848,72 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
 
     dim3 blockDim = dim3(1, 1, 1);
     dim3 gridDim = dim3(1, launch_height, launch_depth);
-    if(launch_width <= 32) {
-        blockDim.x = launch_width;
-        gridDim.x = 1;
+    warp_pixel_mapping mapping = WARP_8X4;
+
+    switch (mapping) {
+        case WARP_32X1:
+            if(launch_width <= 32) {
+                blockDim.x = launch_width;
+                gridDim.x = 1;
+            }
+            else {
+                blockDim.x = 32;
+                gridDim.x = launch_width / 32;
+                if(launch_width % 32 != 0)
+                    gridDim.x++;
+            }
+            break;
+        case WARP_16X2:
+            if(launch_width <= 16) {
+                blockDim.x = launch_width;
+                gridDim.x = 1;
+            }
+            else {
+                blockDim.x = 16;
+                gridDim.x = launch_width / 16;
+                if(launch_width % 16 != 0)
+                    gridDim.x++;
+            }
+            if(launch_height <= 2) {
+                blockDim.y = launch_height;
+                gridDim.y = 1;
+            }
+            else {
+                blockDim.y = 2;
+                gridDim.y = launch_height / 2;
+                if(launch_height % 2 != 0)
+                    gridDim.y++;
+            }
+            break;
+        case WARP_8X4:
+            if(launch_width <= 8) {
+                blockDim.x = launch_width;
+                gridDim.x = 1;
+            }
+            else {
+                blockDim.x = 8;
+                gridDim.x = launch_width / 8;
+                if(launch_width % 8 != 0)
+                    gridDim.x++;
+            }
+            if(launch_height <= 4) {
+                blockDim.y = launch_height;
+                gridDim.y = 1;
+            }
+            else {
+                blockDim.y = 4;
+                gridDim.y = launch_height / 4;
+                if(launch_height % 4 != 0)
+                    gridDim.y++;
+            }
+            break;
+        default:
+            abort();
     }
-    else {
-        blockDim.x = 32;
-        gridDim.x = launch_width / 32;
-        if(launch_width % 32 != 0)
-            gridDim.x++;
-    }
+
+    std::cout << "\n================================ Kernel Dimensions ================================" << std::endl;
+    std::cout << "blockDim: (" << blockDim.x << ", " << blockDim.y << ", " << blockDim.z << ")" << " gridDim: (" << gridDim.x << ", " << gridDim.y << ", " << gridDim.z << ")\n" << std::endl;
+
 
     gpgpu_ptx_sim_arg_list_t args;
     // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(
