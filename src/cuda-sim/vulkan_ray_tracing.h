@@ -1,3 +1,31 @@
+// Copyright (c) 2022, Mohammadreza Saed, Yuan Hsi Chou, Lufei Liu, Tor M. Aamodt,
+// The University of British Columbia
+// All rights reserved.
+
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+
+// Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+// Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution. Neither the name of
+// The University of British Columbia nor the names of its contributors may be
+// used to endorse or promote products derived from this software without
+// specific prior written permission.
+
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
 #ifndef VULKAN_RAY_TRACING_H
 #define VULKAN_RAY_TRACING_H
 
@@ -20,6 +48,9 @@
 #define MIN(a,b) (((a)<(b))?(a):(b))
 #define MIN_MAX(a,b,c) MAX(MIN((a), (b)), (c))
 #define MAX_MIN(a,b,c) MIN(MAX((a), (b)), (c))
+
+#define MAX_DESCRIPTOR_SETS 1
+#define MAX_DESCRIPTOR_SET_BINDINGS 32
 
 // enum class TransactionType {
 //     BVH_STRUCTURE,
@@ -119,49 +150,11 @@ typedef struct Descriptor
     VkDescriptorType type;
 } Descriptor;
 
-typedef struct variable_decleration_entry{
-  uint64_t type;
-  std::string name;
-  uint64_t address;
-  uint32_t size;
-} variable_decleration_entry;
-
-typedef struct Hit_data{
-    VkGeometryTypeKHR geometryType;
-    float world_min_thit;
-    uint32_t geometry_index;
-    uint32_t primitive_index;
-    float3 intersection_point;
-    float3 barycentric_coordinates;
-    int32_t hitGroupIndex; // Shader ID of the closest hit for procedural geometries
-
-    uint32_t instance_index;
-    float4x4 worldToObjectMatrix;
-    float4x4 objectToWorldMatrix;
-} Hit_data;
-
 typedef struct shader_stage_info {
     uint32_t ID;
     gl_shader_stage type;
     char* function_name;
 } shader_stage_info;
-
-typedef struct Traversal_data {
-    bool hit_geometry;
-    Hit_data closest_hit;
-    float3 ray_world_direction;
-    float3 ray_world_origin;
-    float Tmin;
-    float Tmax;
-    int32_t current_shader_counter; // set to shader_counter in call_intersection and -1 in call_miss and call_closest_hit
-
-    uint32_t rayFlags;
-    uint32_t cullMask;
-    uint32_t sbtRecordOffset;
-    uint32_t sbtRecordStride;
-    uint32_t missIndex;
-} Traversal_data;
-
 
 typedef struct StackEntry {
     uint8_t* addr;
@@ -180,70 +173,11 @@ typedef struct StackEntry {
     }
 } StackEntry;
 
-typedef struct Vulkan_RT_thread_data {
-    std::vector<variable_decleration_entry> variable_decleration_table;
-
-    std::vector<Traversal_data> traversal_data;
-
-
-    variable_decleration_entry* get_variable_decleration_entry(uint64_t type, std::string name, uint32_t size) {
-        if(type == 8192)
-            return get_hitAttribute();
-        
-        for (int i = 0; i < variable_decleration_table.size(); i++) {
-            if (variable_decleration_table[i].name == name) {
-                assert (variable_decleration_table[i].address != NULL);
-                return &(variable_decleration_table[i]);
-            }
-        }
-        return NULL;
-    }
-
-    uint64_t add_variable_decleration_entry(uint64_t type, std::string name, uint32_t size) {
-        variable_decleration_entry entry;
-        entry.type = type;
-        entry.name = name;
-        entry.address = (uint64_t) malloc(size);
-        entry.size = size;
-        variable_decleration_table.push_back(entry);
-
-        return entry.address;
-    }
-
-    variable_decleration_entry* get_hitAttribute() {
-        variable_decleration_entry* hitAttribute = NULL;
-        for (int i = 0; i < variable_decleration_table.size(); i++) {
-            if (variable_decleration_table[i].type == 8192) {
-                assert (variable_decleration_table[i].address != NULL);
-                assert (hitAttribute == NULL); // There should be only 1 hitAttribute
-                hitAttribute = &(variable_decleration_table[i]);
-            }
-        }
-        return hitAttribute;
-    }
-
-    void set_hitAttribute(float3 barycentric) {
-        variable_decleration_entry* hitAttribute = get_hitAttribute();
-        float* address;
-        if(hitAttribute == NULL) {
-            address = (float*)add_variable_decleration_entry(8192, "attribs", 36);
-        }
-        else {
-            assert (hitAttribute->type == 8192);
-            assert (hitAttribute->address != NULL);
-            // hitAttribute->name = name;
-            address = (float*)(hitAttribute->address);
-        }
-        address[0] = barycentric.x;
-        address[1] = barycentric.y;
-        address[2] = barycentric.z;
-    }
-} Vulkan_RT_thread_data;
-
 // For launcher
 typedef struct storage_image_metadata
 {
     void *address;
+    void *deviceAddress;
     uint32_t setID;
     uint32_t descID;
     uint32_t width;
@@ -260,6 +194,7 @@ typedef struct storage_image_metadata
 typedef struct texture_metadata
 {
     void *address;
+    void *deviceAddress;
     uint32_t setID;
     uint32_t descID;
     uint64_t size;
@@ -274,7 +209,6 @@ typedef struct texture_metadata
     uint32_t row_pitch_B;
     VkFilter filter;
 } texture_metadata;
-
 
 struct anv_descriptor_set;
 struct anv_descriptor;
@@ -292,9 +226,10 @@ private:
     static struct anv_descriptor_set *descriptorSet;
 
     // For Launcher
-    static void* launcher_descriptorSets[1][10];
+    static void* launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
+    static void* launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
     static std::vector<void*> child_addrs_from_driver;
-    static void *child_addr_from_driver;
+    static bool dumped;
     static bool _init_;
 public:
     // static RayDebugGPUData rayDebugGPUData[2000][2000];
@@ -365,13 +300,15 @@ public:
     static void image_load(struct anv_descriptor *desc, uint32_t x, uint32_t y, float &c0, float &c1, float &c2, float &c3);
 
     static void dump_descriptor_set(uint32_t setID, uint32_t descID, void *address, uint32_t size, VkDescriptorType type);
-    static void dump_descriptor_set_for_AS(uint32_t setID, uint32_t descID, void *address, uint32_t desc_size, VkDescriptorType type, uint32_t backwards_range, uint32_t forward_range, bool split_files);
+    static void dump_descriptor_set_for_AS(uint32_t setID, uint32_t descID, void *address, uint32_t desc_size, VkDescriptorType type, uint32_t backwards_range, uint32_t forward_range, bool split_files, VkAccelerationStructureKHR _topLevelAS);
     static void dump_descriptor_sets(struct anv_descriptor_set *set);
+    static void dump_AS(struct anv_descriptor_set *set, VkAccelerationStructureKHR _topLevelAS);
     static void dump_callparams_and_sbt(void *raygen_sbt, void *miss_sbt, void *hit_sbt, void *callable_sbt, bool is_indirect, uint32_t launch_width, uint32_t launch_height, uint32_t launch_depth, uint32_t launch_size_addr);
     static void dumpTextures(struct anv_descriptor *desc, uint32_t setID, uint32_t binding, VkDescriptorType type);
     static void dumpStorageImage(struct anv_descriptor *desc, uint32_t setID, uint32_t binding, VkDescriptorType type);
-    static void setDescriptorSetFromLauncher(void *address, uint32_t setID, uint32_t descID);
+    static void setDescriptorSetFromLauncher(void *address, void *deviceAddress, uint32_t setID, uint32_t descID);
     static void setStorageImageFromLauncher(void *address, 
+                                            void *deviceAddress,
                                             uint32_t setID, 
                                             uint32_t descID, 
                                             uint32_t width,
@@ -383,7 +320,8 @@ public:
                                             VkImageTiling tiling,
                                             uint32_t isl_tiling_mode, 
                                             uint32_t row_pitch_B);
-    static void setTextureFromLauncher(void *address, 
+    static void setTextureFromLauncher(void *address,
+                                       void *deviceAddress, 
                                        uint32_t setID, 
                                        uint32_t descID, 
                                        uint64_t size,
@@ -398,8 +336,7 @@ public:
                                        uint32_t row_pitch_B,
                                        uint32_t filter);
     static void pass_child_addr(void *address);
-    static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards);
-    static void createTreelets(VkAccelerationStructureKHR _topLevelAS, int maxBytesPerTreelet);
+    static void createTreelets(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet);
     static float calculateSAH(float3 lo, float3 hi);
     static bool isTreeletRoot(StackEntry node);
     static bool isTreeletRoot(uint8_t* addr);
@@ -407,6 +344,8 @@ public:
     static std::vector<StackEntry> treeletIDToChildren(StackEntry treelet_root);
     static std::vector<StackEntry> treeletIDToChildren(uint8_t* treelet_root);
     static void buildNodeToRootMap();
+    static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS);
+    static void* gpgpusim_alloc(uint32_t size);
 };
 
 #endif /* VULKAN_RAY_TRACING_H */

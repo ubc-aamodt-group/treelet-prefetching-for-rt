@@ -1,4 +1,33 @@
+// Copyright (c) 2022, Mohammadreza Saed, Yuan Hsi Chou, Lufei Liu, Tor M. Aamodt,
+// The University of British Columbia
+// All rights reserved.
+
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+
+// Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+// Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution. Neither the name of
+// The University of British Columbia nor the names of its contributors may be
+// used to endorse or promote products derived from this software without
+// specific prior written permission.
+
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
 #include "vulkan_ray_tracing.h"
+#include "vulkan_rt_thread_data.h"
 
 #include <iostream>
 #include <vector>
@@ -71,9 +100,10 @@ bool VulkanRayTracing::firstTime = true;
 std::vector<shader_stage_info> VulkanRayTracing::shaders;
 // RayDebugGPUData VulkanRayTracing::rayDebugGPUData[2000][2000] = {0};
 struct anv_descriptor_set* VulkanRayTracing::descriptorSet = NULL;
-void* VulkanRayTracing::launcher_descriptorSets[1][10] = {NULL};
-void* VulkanRayTracing::child_addr_from_driver = NULL;
+void* VulkanRayTracing::launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS] = {NULL};
+void* VulkanRayTracing::launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS] = {NULL};
 std::vector<void*> VulkanRayTracing::child_addrs_from_driver;
+bool VulkanRayTracing::dumped = false;
 
 // Treelets
 std::map<StackEntry, std::vector<StackEntry>> VulkanRayTracing::treelet_roots;
@@ -197,6 +227,7 @@ bool ray_box_test(float3 low, float3 high, float3 idirection, float3 origin, flo
 	// return slabMin <= slabMax;
     return (min <= max);
 }
+
 
 bool find_primitive(uint8_t* address, int primitiveID, int instanceID, std::list<uint8_t *>& path, bool isTopLevel = true, bool isLeaf = false, bool isRoot = true)
 {
@@ -417,7 +448,7 @@ float VulkanRayTracing::calculateSAH(float3 lo, float3 hi)
 }
 
 
-void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, int maxBytesPerTreelet)
+void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet)
 {
     unsigned total_bvh_size = 0;
     int remaining_bytes = maxBytesPerTreelet;
@@ -727,15 +758,22 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
             {
                 // Move the first treelet node in treelet_roots_pending_work_queue to completed_treelet_roots
                 StackEntry completed_treelet = treelet_roots_pending_work_queue.front();
+                StackEntry completed_treelet_device_addr = treelet_roots_pending_work_queue.front();
+                completed_treelet_device_addr.addr += device_offset;
                 // std::cout << "Treelet root " << (void*)completed_treelet.addr << " done: size limit reached" << std::endl;
                 std::vector<StackEntry> node_list = nodes_in_current_treelet;
-                completed_treelet_roots[completed_treelet] = node_list;
-                completed_treelet_roots_addr_only[completed_treelet.addr] = node_list;
+                for (int i = 0; i < node_list.size(); i++)
+                {
+                    node_list[i].addr += device_offset;
+                }
+                completed_treelet_roots[completed_treelet_device_addr] = node_list;
+                completed_treelet_roots_addr_only[completed_treelet_device_addr.addr] = node_list;
                 treelet_roots_pending_work_queue.pop_front();
                 nodes_in_current_treelet.clear();
                 
                 // Add all nodes in stack to treelet_roots_pending_work_queue
                 std::vector<StackEntry> children;
+                std::vector<StackEntry> children_device_addr;
 
                 for (int i = 0; i < stack.size(); i++)
                 {
@@ -744,11 +782,16 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                     treelet_roots_pending_work_queue_nodesize.push_back(nodesize_stack[i]);
 
                     if (i != 0) // Don't add the first element which is the node itself
+                    {
                         children.push_back(stack[i]);
+                        StackEntry tmp = stack[i];
+                        tmp.addr += device_offset;
+                        children_device_addr.push_back(tmp);
+                    }
                 }
 
-                treelet_root_child_map[completed_treelet] = children;
-                treelet_root_addr_only_child_map[completed_treelet.addr] = children;
+                treelet_root_child_map[completed_treelet_device_addr] = children_device_addr;
+                treelet_root_addr_only_child_map[completed_treelet_device_addr.addr ] = children_device_addr;
 
                 // Clear out the current stack and push first node in treelet_roots_pending_work_queue to the stacks
                 stack.clear();
@@ -778,16 +821,22 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
 
                 // Move the first treelet node in treelet_roots_pending_work_queue to completed_treelet_roots
                 StackEntry completed_treelet = treelet_roots_pending_work_queue.front();
+                StackEntry completed_treelet_device_addr = treelet_roots_pending_work_queue.front();
+                completed_treelet_device_addr.addr += device_offset;
                 // std::cout << "Treelet root " << (void*)completed_treelet.addr << " done: no more nodes to include" << std::endl;
                 std::vector<StackEntry> node_list = nodes_in_current_treelet;
-                completed_treelet_roots[completed_treelet] = node_list;
-                completed_treelet_roots_addr_only[completed_treelet.addr] = node_list;
+                for (int i = 0; i < node_list.size(); i++)
+                {
+                    node_list[i].addr += device_offset;
+                }
+                completed_treelet_roots[completed_treelet_device_addr] = node_list;
+                completed_treelet_roots_addr_only[completed_treelet_device_addr.addr] = node_list;
                 treelet_roots_pending_work_queue.pop_front();
                 nodes_in_current_treelet.clear();
 
                 std::vector<StackEntry> children = {};
-                treelet_root_child_map[completed_treelet] = children;
-                treelet_root_addr_only_child_map[completed_treelet.addr] = children;
+                treelet_root_child_map[completed_treelet_device_addr] = children;
+                treelet_root_addr_only_child_map[completed_treelet_device_addr.addr] = children;
 
                 // Set next node to NULL
                 next_node = StackEntry(NULL, false, false);
@@ -862,7 +911,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
 }
 
 bool treeletsFormed = false;
-bool debugTraversal = true;
+bool debugTraversal = false;
 
 void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 				   uint rayFlags,
@@ -883,14 +932,51 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     // std::list<uint8_t *> path;
     // find_primitive((uint8_t*)_topLevelAS, 6, 2, path);
 
+    if (!use_external_launcher && !dumped) 
+    {
+        dump_AS(VulkanRayTracing::descriptorSet, _topLevelAS);
+        std::cout << "Trace dumped" << std::endl;
+        dumped = true;
+    }
+
+    // Convert device address back to host address for func sim. This will break if the device address was modified then passed to traceRay. Should be fixable if I also record the size when I malloc then I can check the bounds of the device address.
+    uint8_t* deviceAddress = nullptr;
+    int64_t device_offset = 0;
+    if (use_external_launcher)
+    {
+        deviceAddress = (uint8_t*)_topLevelAS;
+        bool addressFound = false;
+        for (int i = 0; i < MAX_DESCRIPTOR_SETS; i++)
+        {
+            for (int j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++)
+            {
+                if (launcher_deviceDescriptorSets[i][j] == (void*)_topLevelAS)
+                {
+                    _topLevelAS = launcher_descriptorSets[i][j];
+                    addressFound = true;
+                    break;
+                }
+            }
+            if (addressFound)
+                break;
+        }
+        if (!addressFound)
+            abort();
+    
+        // Calculate offset between host and device for memory transactions
+        device_offset = (uint64_t)deviceAddress - (uint64_t)_topLevelAS;
+    }
+
+
     // Form Treelets
     if (!treeletsFormed)
     {
-        createTreelets(_topLevelAS, 48*1024); // 48*1024 aila2010 paper
+        createTreelets(_topLevelAS, device_offset, 48*1024); // 48*1024 aila2010 paper
         treeletsFormed = true;
     }
 
     //int result = isTreeletRoot((uint8_t*)_topLevelAS); // test
+
 
     Traversal_data traversal_data;
 
@@ -945,7 +1031,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     //uint8_t* topLevelASAddr = get_anv_accel_address((VkAccelerationStructureKHR)_topLevelAS);
     GEN_RT_BVH topBVH; //TODO: test hit with world before traversal
     GEN_RT_BVH_unpack(&topBVH, (uint8_t*)_topLevelAS);
-    transactions.push_back(MemoryTransactionRecord((uint8_t*)_topLevelAS, GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+    transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)_topLevelAS + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
     
     uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
@@ -1003,7 +1089,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             next_node_addr = NULL;
             struct GEN_RT_BVH_INTERNAL_NODE node;
             GEN_RT_BVH_INTERNAL_NODE_unpack(&node, node_addr);
-            transactions.push_back(MemoryTransactionRecord(node_addr, GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)node_addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
             total_nodes_accessed++;
 
@@ -1097,7 +1183,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
             GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
             GEN_RT_BVH_INSTANCE_LEAF_unpack(&instanceLeaf, leaf_addr);
-            transactions.push_back(MemoryTransactionRecord(leaf_addr, GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
+            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
             total_nodes_accessed++;
 
@@ -1107,7 +1193,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             assert(instanceLeaf.BVHAddress != NULL);
             GEN_RT_BVH botLevelASAddr;
             GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
-            transactions.push_back(MemoryTransactionRecord((void*)(leaf_addr + instanceLeaf.BVHAddress), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + instanceLeaf.BVHAddress + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
 
             // std::ofstream offsetfile;
@@ -1121,7 +1207,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             float worldToObject_tMultiplier;
             Ray objectRay = make_transformed_ray(ray, worldToObjectMatrix, &worldToObject_tMultiplier);
 
-            uint8_t * botLevelRootAddr = ((uint8_t *)(leaf_addr + instanceLeaf.BVHAddress)) + botLevelASAddr.RootNodeOffset;
+            uint8_t * botLevelRootAddr = ((uint8_t *)((uint64_t)leaf_addr + instanceLeaf.BVHAddress)) + botLevelASAddr.RootNodeOffset;
             stack.push_back(StackEntry(botLevelRootAddr, false, false));
             assert(tree_level_map.find(leaf_addr) != tree_level_map.end());
             tree_level_map[botLevelRootAddr] = tree_level_map[leaf_addr];
@@ -1154,7 +1240,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
                     struct GEN_RT_BVH_INTERNAL_NODE node;
                     GEN_RT_BVH_INTERNAL_NODE_unpack(&node, node_addr);
-                    transactions.push_back(MemoryTransactionRecord(node_addr, GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+                    transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)node_addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
                     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
                     total_nodes_accessed++;
 
@@ -1244,7 +1330,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     stack.pop_back();
                     struct GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR leaf_descriptor;
                     GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(&leaf_descriptor, leaf_addr);
-                    transactions.push_back(MemoryTransactionRecord(leaf_addr, GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR));
+                    transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR));
                     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR)]++;
 
                     if (leaf_descriptor.LeafType == TYPE_QUAD)
@@ -1304,7 +1390,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             closest_objectRay = objectRay;
                             min_thit_object = thit;
                             thread->add_ray_intersect();
-                            transactions.push_back(MemoryTransactionRecord(leaf_addr, GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
+                            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
                             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF_HIT)]++;
                             total_nodes_accessed++;
 
@@ -1314,7 +1400,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             }
                         }
                         else {
-                            transactions.push_back(MemoryTransactionRecord(leaf_addr, GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF));
+                            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF));
                             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF)]++;
                             total_nodes_accessed++;
                         }
@@ -1327,14 +1413,14 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     {
                         struct GEN_RT_BVH_PROCEDURAL_LEAF leaf;
                         GEN_RT_BVH_PROCEDURAL_LEAF_unpack(&leaf, leaf_addr);
-                        transactions.push_back(MemoryTransactionRecord(leaf_addr, GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
+                        transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
                         ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PROCEDURAL_LEAF)]++;
                         total_nodes_accessed++;
 
                         uint32_t hit_group_index = instanceLeaf.InstanceContributionToHitGroupIndex;
 
                         warp_intersection_table* table = intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
-                        auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex[0], instanceLeaf.InstanceID);
+                        auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex[0], instanceLeaf.InstanceID, pI, thread); // TODO: switch these to device addresses
                         
                         // transactions.insert(transactions.end(), intersectionTransactions.first.begin(), intersectionTransactions.first.end());
                         for(auto & newTransaction : intersectionTransactions.first)
@@ -1392,10 +1478,14 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     {
         traversal_data.hit_geometry = false;
     }
+
+    memory_space *mem = thread->get_global_memory();
+    Traversal_data* device_traversal_data = (Traversal_data*) VulkanRayTracing::gpgpusim_alloc(sizeof(Traversal_data));
+    mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);
+    thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
     
     thread->set_rt_transactions(transactions);
     thread->set_rt_store_transactions(store_transactions);
-    thread->RT_thread_data->traversal_data.push_back(traversal_data);
 
     if (debugTraversal)
     {
@@ -1739,6 +1829,8 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
                       uint32_t launch_height,
                       uint32_t launch_depth,
                       uint64_t launch_size_addr) {
+    // launch_width = 32;
+    // launch_height = 32;
     init(launch_width, launch_height);
     
     // Dump Descriptor Sets
@@ -1843,8 +1935,8 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
     unsigned n_args = entry->num_args();
     //unsigned n_operands = pI->get_num_operands();
 
-    // launch_width = 32;
-    // launch_height = 32;
+    // launch_width = 1;
+    // launch_height = 1;
 
     dim3 blockDim = dim3(1, 1, 1);
     dim3 gridDim = dim3(1, launch_height, launch_depth);
@@ -1952,9 +2044,16 @@ void VulkanRayTracing::callMissShader(const ptx_instruction *pI, ptx_thread_info
     ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
 
-    thread->RT_thread_data->traversal_data.back().current_shader_counter = -1;
+    memory_space *mem = thread->get_global_memory();
+    Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
 
-    uint32_t shaderID = *((uint32_t *)(thread->get_kernel().vulkan_metadata.miss_sbt) + 8 * thread->RT_thread_data->traversal_data.back().missIndex);
+    int32_t current_shader_counter = -1;
+    mem->write(&(traversal_data->current_shader_counter), sizeof(traversal_data->current_shader_counter), &current_shader_counter, thread, pI);
+
+    uint32_t missIndex;
+    mem->read(&(traversal_data->missIndex), sizeof(traversal_data->missIndex), &missIndex);
+
+    uint32_t shaderID = *((uint32_t *)(thread->get_kernel().vulkan_metadata.miss_sbt) + 8 * missIndex);
     
     shader_stage_info miss_shader = shaders[shaderID];
 
@@ -1966,19 +2065,28 @@ void VulkanRayTracing::callClosestHitShader(const ptx_instruction *pI, ptx_threa
     gpgpu_context *ctx;
     ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
-    
-    Traversal_data* traversal_data = &thread->RT_thread_data->traversal_data.back();
-    assert(traversal_data->hit_geometry);
-    traversal_data->current_shader_counter = -1;
 
-    // shader_stage_info closesthit_shader = shaders[*(uint64_t *)(thread->get_kernel().vulkan_metadata.hit_sbt)];
-    // shader_stage_info closesthit_shader = shaders[3];
+    memory_space *mem = thread->get_global_memory();
+    Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+
+    bool hit_geometry;
+    mem->read(&(traversal_data->hit_geometry), sizeof(bool), &hit_geometry);
+    assert(hit_geometry);
+
+    int32_t current_shader_counter = -1;
+    mem->write(&(traversal_data->current_shader_counter), sizeof(traversal_data->current_shader_counter), &current_shader_counter, thread, pI);
+
+    VkGeometryTypeKHR geometryType;
+    mem->read(&(traversal_data->closest_hit.geometryType), sizeof(traversal_data->closest_hit.geometryType), &geometryType);
 
     shader_stage_info closesthit_shader;
-    if(traversal_data->closest_hit.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR)
+    if(geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR)
         closesthit_shader = shaders[*((uint64_t *)(thread->get_kernel().vulkan_metadata.hit_sbt))];
-    else
-        closesthit_shader = shaders[*((uint64_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * traversal_data->closest_hit.hitGroupIndex)];
+    else {
+        int32_t hitGroupIndex;
+        mem->read(&(traversal_data->closest_hit.hitGroupIndex), sizeof(traversal_data->closest_hit.hitGroupIndex), &hitGroupIndex);
+        closesthit_shader = shaders[*((uint64_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex)];
+    }
 
     function_info *entry = context->get_kernel(closesthit_shader.function_name);
     callShader(pI, thread, entry);
@@ -1988,12 +2096,13 @@ void VulkanRayTracing::callIntersectionShader(const ptx_instruction *pI, ptx_thr
     gpgpu_context *ctx;
     ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
-
-    Traversal_data* traversal_data = &thread->RT_thread_data->traversal_data.back();
-    traversal_data->current_shader_counter = (int32_t)shader_counter;
+    
+    memory_space *mem = thread->get_global_memory();
+    Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+    mem->write(&(traversal_data->current_shader_counter), sizeof(traversal_data->current_shader_counter), &shader_counter, thread, pI);
 
     warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
-    uint32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x);
+    uint32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
 
     shader_stage_info intersection_shader = shaders[*((uint64_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex + 1)];
     function_info *entry = context->get_kernel(intersection_shader.function_name);
@@ -2115,8 +2224,9 @@ void VulkanRayTracing::setDescriptor(uint32_t setID, uint32_t descID, void *addr
 }
 
 
-void VulkanRayTracing::setDescriptorSetFromLauncher(void *address, uint32_t setID, uint32_t descID)
+void VulkanRayTracing::setDescriptorSetFromLauncher(void *address, void *deviceAddress, uint32_t setID, uint32_t descID)
 {
+    launcher_deviceDescriptorSets[setID][descID] = deviceAddress;
     launcher_descriptorSets[setID][descID] = address;
 }
 
@@ -2124,7 +2234,8 @@ void* VulkanRayTracing::getDescriptorAddress(uint32_t setID, uint32_t binding)
 {
     if (use_external_launcher)
     {
-        return launcher_descriptorSets[setID][binding];
+        return launcher_deviceDescriptorSets[setID][binding];
+        // return launcher_descriptorSets[setID][binding];
     }
     else 
     {
@@ -2506,7 +2617,7 @@ void VulkanRayTracing::dumpStorageImage(struct anv_descriptor *desc, uint32_t se
 }
 
 
-void VulkanRayTracing::dump_descriptor_set_for_AS(uint32_t setID, uint32_t descID, void *address, uint32_t desc_size, VkDescriptorType type, uint32_t backwards_range, uint32_t forward_range, bool split_files)
+void VulkanRayTracing::dump_descriptor_set_for_AS(uint32_t setID, uint32_t descID, void *address, uint32_t desc_size, VkDescriptorType type, uint32_t backwards_range, uint32_t forward_range, bool split_files, VkAccelerationStructureKHR _topLevelAS)
 {
     FILE *fp;
     char *mesa_root = getenv("MESA_ROOT");
@@ -2534,9 +2645,9 @@ void VulkanRayTracing::dump_descriptor_set_for_AS(uint32_t setID, uint32_t descI
     int64_t min_backwards; // negative number
     int64_t min_forwards;
     int64_t max_forwards;
-    int64_t back_buffer_amount = 1024*20; //20kB buffer just in case
+    int64_t back_buffer_amount = 0; //20kB buffer just in case
     int64_t front_buffer_amount = 1024*20; //20kB buffer just in case
-    findOffsetBounds(max_backwards, min_backwards, min_forwards, max_forwards);
+    findOffsetBounds(max_backwards, min_backwards, min_forwards, max_forwards, _topLevelAS);
 
     bool haveBackwards = (max_backwards != 0) && (min_backwards != 0);
     bool haveForwards = (min_forwards != 0) && (max_forwards != 0);
@@ -2694,10 +2805,10 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set)
             // for some reason raytracing_extended skipped binding = 3
             // and somehow they have 34 descriptor sets but only 10 are used
             // so we just skip those
-            //continue;
+            continue;
        }
 
-       struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
+        struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
 
         const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[i];
         struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
@@ -2759,7 +2870,7 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set)
             {
                 struct anv_address_range_descriptor *desc_data = desc_map;
                 //return (void *)(desc_data->address);
-                dump_descriptor_set_for_AS(0, i, (void *)(desc_data->address), desc_data->range, set->descriptors[i].type, 1024*1024*10, 1024*1024*10, true);
+                //dump_descriptor_set_for_AS(0, i, (void *)(desc_data->address), desc_data->range, set->descriptors[i].type, 1024*1024*10, 1024*1024*10, true);
                 break;
             }
 
@@ -2767,79 +2878,43 @@ void VulkanRayTracing::dump_descriptor_sets(struct anv_descriptor_set *set)
                 assert(0);
                 break;
         }
-    //   const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[i];
-    //   struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
-    //   void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
+   }
+}
 
-    //   assert(desc->type == bind_layout->type);
-      
-    //   switch (desc->type)
-    //   {
-    //      case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
-    //      {
-    //         assert(bind_layout->data & ANV_DESCRIPTOR_STORAGE_IMAGE);
-    //         assert(desc->sampler == NULL);
+void VulkanRayTracing::dump_AS(struct anv_descriptor_set *set, VkAccelerationStructureKHR _topLevelAS)
+{
+   for(int i = 0; i < set->descriptor_count; i++)
+   {
+       if(i == 3 || i > 9)
+       {
+            // for some reason raytracing_extended skipped binding = 3
+            // and somehow they have 34 descriptor sets but only 10 are used
+            // so we just skip those
+            continue;
+       }
 
-    //         struct anv_image_view *image_view = desc->image_view;
-    //         assert(image_view != NULL);
-    //         struct anv_image * image = image_view->image;
-    //         void* address = anv_address_map(image->planes[0].address);
-    //         dump_descriptor_set(0, i, address, 0, set->descriptors[i].type);
-    //         break;
-    //         //return address;
-    //      }
-    //      case VK_DESCRIPTOR_TYPE_SAMPLER:
-    //      case VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:
-    //      case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
-    //      case VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT:
-    //      {
-    //         //return desc;
-    //      }
+        struct anv_descriptor_set* set = VulkanRayTracing::descriptorSet;
 
-    //      case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER:
-    //      case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-    //         assert(0);
-    //         break;
+        const struct anv_descriptor_set_binding_layout *bind_layout = &set->layout->binding[i];
+        struct anv_descriptor *desc = &set->descriptors[bind_layout->descriptor_index];
+        void *desc_map = set->desc_mem.map + bind_layout->descriptor_offset;
 
-    //      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER:
-    //      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER:
-    //      case VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC:
-    //      case VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC:
-    //      {
-    //         if (desc->type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC ||
-    //             desc->type == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC)
-    //         {
-    //             // MRS_TODO: account for desc->offset?
-    //             //return anv_address_map(desc->buffer->address);
-    //             dump_descriptor_set(0, i, anv_address_map(desc->buffer->address), set->descriptors[i].buffer->size, set->descriptors[i].type);
-    //             break;
-    //         }
-    //         else
-    //         {
-    //             struct anv_buffer_view *bview = &set->buffer_views[bind_layout->buffer_view_index];
-    //             //return anv_address_map(bview->address);
-    //             dump_descriptor_set(0, i, anv_address_map(bview->address), bview->range, set->descriptors[i].type);
-    //             break;
-    //         }
-    //      }
+        assert(desc->type == bind_layout->type);
 
-    //      case VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK_EXT:
-    //         assert(0);
-    //         break;
+        switch (desc->type)
+        {
+            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
+            case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
+            {
+                struct anv_address_range_descriptor *desc_data = desc_map;
+                //return (void *)(desc_data->address);
+                dump_descriptor_set_for_AS(0, i, (void *)(desc_data->address), desc_data->range, set->descriptors[i].type, 1024*1024*10, 1024*1024*10, true, _topLevelAS);
+                break;
+            }
 
-    //      case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR:
-    //      case VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_NV:
-    //      {
-    //         struct anv_address_range_descriptor *desc_data = desc_map;
-    //         //return (void *)(desc_data->address);
-    //         dump_descriptor_set_for_AS(0, i, (void *)(desc_data->address), desc_data->range, set->descriptors[i].type, 1024*1024*10);
-    //         break;
-    //      }
-
-    //      default:
-    //         assert(0);
-    //         break;
-    //   }
+            default:
+                break;
+        }
    }
 }
 
@@ -2892,6 +2967,7 @@ void VulkanRayTracing::dump_callparams_and_sbt(void *raygen_sbt, void *miss_sbt,
 }
 
 void VulkanRayTracing::setStorageImageFromLauncher(void *address, 
+                                                void *deviceAddress, 
                                                 uint32_t setID, 
                                                 uint32_t descID, 
                                                 uint32_t width,
@@ -2917,11 +2993,14 @@ void VulkanRayTracing::setStorageImageFromLauncher(void *address,
     storage_image->tiling = tiling;
     storage_image->isl_tiling_mode = isl_tiling_mode; 
     storage_image->row_pitch_B = row_pitch_B;
+    storage_image->deviceAddress = deviceAddress;
 
     launcher_descriptorSets[setID][descID] = (void*) storage_image;
+    launcher_deviceDescriptorSets[setID][descID] = (void*) storage_image;
 }
 
 void VulkanRayTracing::setTextureFromLauncher(void *address, 
+                                            void *deviceAddress, 
                                             uint32_t setID, 
                                             uint32_t descID, 
                                             uint64_t size,
@@ -2951,19 +3030,18 @@ void VulkanRayTracing::setTextureFromLauncher(void *address,
     texture->isl_tiling_mode = isl_tiling_mode;
     texture->row_pitch_B = row_pitch_B;
     texture->filter = filter;
+    texture->deviceAddress = deviceAddress;
 
     launcher_descriptorSets[setID][descID] = (void*) texture;
+    launcher_deviceDescriptorSets[setID][descID] = (void*) texture;
 }
 
 void VulkanRayTracing::pass_child_addr(void *address)
 {
     child_addrs_from_driver.push_back(address);
-    
-    //old
-    child_addr_from_driver = address;
 }
 
-void VulkanRayTracing::findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards)
+void VulkanRayTracing::findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS)
 {
     // uint64_t current_min_backwards = 0;
     // uint64_t current_max_backwards = 0;
@@ -2976,7 +3054,7 @@ void VulkanRayTracing::findOffsetBounds(int64_t &max_backwards, int64_t &min_bac
 
     for (auto addr : child_addrs_from_driver)
     {
-        offset = (uint64_t)addr - (uint64_t)topLevelAS;
+        offset = (uint64_t)addr - (uint64_t)_topLevelAS;
         if (offset >= 0)
             positive_offsets.push_back(offset);
         else
@@ -3007,4 +3085,19 @@ void VulkanRayTracing::findOffsetBounds(int64_t &max_backwards, int64_t &min_bac
         min_forwards = 0;
         max_forwards = 0;
     }
+}
+
+
+void* VulkanRayTracing::gpgpusim_alloc(uint32_t size)
+{
+    gpgpu_context *ctx = GPGPU_Context();
+    CUctx_st *context = GPGPUSim_Context(ctx);
+    void* devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
+    if (g_debug_execution >= 3) {
+        printf("GPGPU-Sim PTX: gpgpusim_allocing %zu bytes starting at 0x%llx..\n",
+            size, (unsigned long long)devPtr);
+        ctx->api->g_mallocPtr_Size[(unsigned long long)devPtr] = size;
+    }
+    assert(devPtr);
+    return devPtr;
 }
