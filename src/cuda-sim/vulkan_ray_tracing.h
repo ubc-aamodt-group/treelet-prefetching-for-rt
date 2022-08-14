@@ -234,7 +234,7 @@ private:
 public:
     // static RayDebugGPUData rayDebugGPUData[2000][2000];
     static warp_intersection_table*** intersection_table;
-    static const IntersectionTableType intersectionTableType = IntersectionTableType::Baseline;
+    static IntersectionTableType intersectionTableType;
 
     // Treelets
     static std::map<StackEntry, std::vector<StackEntry>> treelet_roots; // <treelet node, vector of children that belong to this treelet>, just to look up if an address is a treelet root node or not
