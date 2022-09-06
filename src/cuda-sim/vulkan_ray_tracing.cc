@@ -940,6 +940,28 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
         }
     }
 
+    // Remove dupes in completed_treelet_roots_addr_only
+    for (auto root_node : completed_treelet_roots_addr_only)
+    {
+        std::vector <StackEntry> dupe_free_node_list;
+        for (int i = 0; i < root_node.second.size(); i++)
+        {
+            bool found = false;
+            for (int j = 0; j < dupe_free_node_list.size(); j++)
+            {
+                if (root_node.second[i].addr == dupe_free_node_list[j].addr)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                dupe_free_node_list.push_back(root_node.second[i]);
+        }
+        completed_treelet_roots_addr_only[root_node.first] = dupe_free_node_list;
+    }
+
     std::cout << "Treelet formation done" << std::endl;
     treelet_roots = completed_treelet_roots;
     treelet_roots_addr_only = completed_treelet_roots_addr_only;

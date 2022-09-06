@@ -3554,9 +3554,12 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
   new_addr_type base_addr = next_access.address;
   
   // Stats for Treelet limit study
-  std::map<new_addr_type, unsigned long long> address_cycle_pair;
-  address_cycle_pair[next_addr] = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
-  GPGPU_Context()->the_gpgpusim->g_the_gpu->rt_address_cycle_pair.push_back(address_cycle_pair);
+  // std::map<new_addr_type, unsigned long long> address_cycle_pair;
+  // address_cycle_pair[next_addr] = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+  // GPGPU_Context()->the_gpgpusim->g_the_gpu->rt_address_cycle_pair.push_back(address_cycle_pair);
+
+  uint8_t* treelet_root = VulkanRayTracing::addrToTreeletID((uint8_t*)next_addr);
+  std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[treelet_root];
 
   // std::ofstream memoryTransactionsFile;
   // memoryTransactionsFile.open("addr_issue_cycle.txt", std::ios_base::app);
