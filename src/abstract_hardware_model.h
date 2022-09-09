@@ -345,6 +345,13 @@ address_type line_size_based_tag_func(new_addr_type address, new_addr_type line_
       fflush(stdout); \
    }
 
+#define TOMMY_DEBUG_PRINT 1
+#define TOMMY_DPRINTF(...) \
+   if(TOMMY_DEBUG_PRINT) { \
+      printf(__VA_ARGS__); \
+      fflush(stdout); \
+   }
+
 // Jin: child kernel information for CDP
 #include "stream_manager.h"
 class stream_manager;

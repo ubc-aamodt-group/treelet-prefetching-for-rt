@@ -160,7 +160,9 @@ typedef struct StackEntry {
     uint8_t* addr;
     bool topLevel;
     bool leaf;
+    int size;
     StackEntry(uint8_t* addr, bool topLevel, bool leaf): addr(addr), topLevel(topLevel), leaf(leaf) {}
+    StackEntry(uint8_t* addr, bool topLevel, bool leaf, int size): addr(addr), topLevel(topLevel), leaf(leaf), size(size) {}
 
     bool operator<(const StackEntry &o)  const
     {

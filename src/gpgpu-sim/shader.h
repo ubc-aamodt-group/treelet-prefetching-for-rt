@@ -1308,6 +1308,10 @@ class rt_unit : public pipelined_simd_unit {
 
         // For Treelets
         void sort_mem_accesses(std::deque<RTMemoryTransactionRecord> &mem_accesses, std::map<uint8_t*, int> node_access_counts_per_treelet);
+
+        // Prefetching
+        void send_prefetch_request(warp_inst_t &inst);
+        mem_fetch* process_prefetch_queue(warp_inst_t &inst);
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -1346,7 +1350,7 @@ class rt_unit : public pipelined_simd_unit {
 
       std::deque<std::pair<unsigned, new_addr_type> > mem_store_q;
       
-      std::deque<new_addr_type> mem_access_q;
+      std::deque<std::pair<new_addr_type ,new_addr_type>> mem_access_q; // chunk addr, base addr
       unsigned mem_access_q_warp_uid;
       new_addr_type mem_access_q_base_addr;
       int mem_access_q_type;
@@ -1367,6 +1371,12 @@ class rt_unit : public pipelined_simd_unit {
       unsigned cycles_without_dispatching = 0;
       bool sort_msg_printed = false;
       unsigned int prev_n_warps = 0;
+
+      // Prefetching
+      uint8_t* last_prefetched_treelet = NULL;
+      bool prefetch_opportunity = false;
+      std::deque<std::pair<new_addr_type ,new_addr_type>> prefetch_mem_access_q; // chunk addr, base addr
+      bool prefetch_access = false;
 };
 
 class ldst_unit : public pipelined_simd_unit {
@@ -1794,6 +1804,7 @@ class shader_core_config : public core_config {
   ray_coherence_config m_rt_coherence_engine_config;
   bool bypassL0Complet;
   unsigned m_rt_intersection_table_type;
+  bool m_treelet_prefetch;
 };
 
 struct shader_core_stats_pod {

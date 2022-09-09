@@ -515,7 +515,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
     std::map<uint8_t*, unsigned> tree_level_map;
 
     // Start with top root node
-    treelet_roots_pending_work_queue.push_back(StackEntry((uint8_t*)_topLevelAS, true, false));
+    treelet_roots_pending_work_queue.push_back(StackEntry((uint8_t*)_topLevelAS, true, false, GEN_RT_BVH_length * 4));
     treelet_roots_pending_work_queue_sah.push_back(1.0);
     treelet_roots_pending_work_queue_nodesize.push_back(GEN_RT_BVH_length * 4 + GEN_RT_BVH_INTERNAL_NODE_length * 4);
 
@@ -524,10 +524,10 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
     remaining_bytes -= GEN_RT_BVH_length * 4; //_topLevelAS
     assert(remaining_bytes >= 0);
     total_bvh_size += GEN_RT_BVH_length * 4;
-    nodes_in_current_treelet.push_back(StackEntry((uint8_t*)_topLevelAS, true, false));
+    nodes_in_current_treelet.push_back(StackEntry((uint8_t*)_topLevelAS, true, false, GEN_RT_BVH_length * 4));
 
     uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
-    stack.push_back(StackEntry(topRootAddr, true, false));
+    stack.push_back(StackEntry(topRootAddr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
     sah_stack.push_back(1.0); // placeholder
     nodesize_stack.push_back(GEN_RT_BVH_INTERNAL_NODE_length * 4);
     tree_level_map[topRootAddr] = 1;
@@ -595,14 +595,14 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                         if(node.ChildType[i] != NODE_TYPE_INTERNAL)
                         {
                             assert(node.ChildType[i] == NODE_TYPE_INSTANCE); // top level leaf
-                            stack.push_back(StackEntry(child_addr, true, true));
+                            stack.push_back(StackEntry(child_addr, true, true, GEN_RT_BVH_INSTANCE_LEAF_length * 4));
                             nodesize_stack.push_back(GEN_RT_BVH_INSTANCE_LEAF_length * 4 + GEN_RT_BVH_length * 4); // reason for adding GEN_RT_BVH_length * 4 is because the 2 nodes are traversed back to back
                             assert(tree_level_map.find(node_addr) != tree_level_map.end());
                             tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
                         }
                         else
                         {
-                            stack.push_back(StackEntry(child_addr, true, false));
+                            stack.push_back(StackEntry(child_addr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
                             nodesize_stack.push_back(GEN_RT_BVH_INTERNAL_NODE_length * 4);
                             assert(tree_level_map.find(node_addr) != tree_level_map.end());
                             tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
@@ -642,7 +642,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 GEN_RT_BVH botLevelASAddr;
                 GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
                 remaining_bytes -= GEN_RT_BVH_length * 4;
-                nodes_in_current_treelet.push_back(StackEntry((uint8_t *)(leaf_addr + instanceLeaf.BVHAddress), true, true));
+                nodes_in_current_treelet.push_back(StackEntry((uint8_t *)(leaf_addr + instanceLeaf.BVHAddress), true, true, GEN_RT_BVH_length * 4));
                 assert(remaining_bytes >= 0);
                 total_bvh_size += GEN_RT_BVH_length * 4;
 
@@ -655,7 +655,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 // leaf_addr_file << (int64_t)((uint64_t)leaf_addr - (uint64_t)_topLevelAS) << std::endl;
 
                 uint8_t * botLevelRootAddr = ((uint8_t *)(leaf_addr + instanceLeaf.BVHAddress)) + botLevelASAddr.RootNodeOffset;
-                stack.push_back(StackEntry(botLevelRootAddr, false, false));
+                stack.push_back(StackEntry(botLevelRootAddr, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
                 sah_stack.push_back(1.0);
                 nodesize_stack.push_back(GEN_RT_BVH_INTERNAL_NODE_length * 4);
                 assert(tree_level_map.find(leaf_addr) != tree_level_map.end());
@@ -724,14 +724,16 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
 
                         if(node.ChildType[i] != NODE_TYPE_INTERNAL)
                         {
-                            stack.push_back(StackEntry(child_addr, false, true));
-                            nodesize_stack.push_back(GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4 + GEN_RT_BVH_length * 4); // reason for adding GEN_RT_BVH_length * 4 is because the 2 nodes are traversed back to back
+                            //stack.push_back(StackEntry(child_addr, false, true, GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4 + GEN_RT_BVH_length * 4));
+                            //nodesize_stack.push_back(GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4 + GEN_RT_BVH_length * 4); // reason for adding GEN_RT_BVH_length * 4 is because the 2 nodes are traversed back to back
+                            stack.push_back(StackEntry(child_addr, false, true, GEN_RT_BVH_length * 4));
+                            nodesize_stack.push_back(GEN_RT_BVH_length * 4); // both leaf descriptor and quad/procedural leaf use the same addresss
                             assert(tree_level_map.find(node_addr) != tree_level_map.end());
                             tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
                         }
                         else
                         {
-                            stack.push_back(StackEntry(child_addr, false, false));
+                            stack.push_back(StackEntry(child_addr, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
                             nodesize_stack.push_back(GEN_RT_BVH_INTERNAL_NODE_length * 4);
                             assert(tree_level_map.find(node_addr) != tree_level_map.end());
                             tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
@@ -747,9 +749,9 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 // stack.pop_front();
                 struct GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR leaf_descriptor;
                 GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(&leaf_descriptor, leaf_addr);
-                remaining_bytes -= GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4;
-                assert(remaining_bytes >= 0);
-                total_bvh_size += GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4;
+                //remaining_bytes -= GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4;
+                //assert(remaining_bytes >= 0);
+                //total_bvh_size += GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4;
                 nodes_in_current_treelet.push_back(next_node);
 
                 if (leaf_descriptor.LeafType == TYPE_QUAD)

@@ -3132,60 +3132,60 @@ void rt_unit::cycle() {
 
   // For Treelet Limit Study
   // Accumulate enough warps before dispatching memory accesses so we can take advantage of treelets
-  if ((n_warps < m_config->max_warps_per_shader && n_warps < m_config->max_cta_per_core) && cycles_without_dispatching < 5000 && n_warps > 0) // TODO: should also add some cycle limit condition in case theres never enough warps to queue up
-  {
-    if (prev_n_warps != n_warps)
-      std::cout << "Queued up " << n_warps << " in SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
-    prev_n_warps = n_warps;
-    // sort_msg_printed = false;
-    cycles_without_dispatching++;
-    return;
-  }
+  // if ((n_warps < m_config->max_warps_per_shader && n_warps < m_config->max_cta_per_core) && cycles_without_dispatching < 5000 && n_warps > 0) // TODO: should also add some cycle limit condition in case theres never enough warps to queue up
+  // {
+  //   if (prev_n_warps != n_warps)
+  //     std::cout << "Queued up " << n_warps << " in SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
+  //   prev_n_warps = n_warps;
+  //   // sort_msg_printed = false;
+  //   cycles_without_dispatching++;
+  //   return;
+  // }
 
-  if (n_warps > 0 && prev_n_warps != n_warps)
-  {
-    prev_n_warps = n_warps;
-    // std::cout << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
-    // if (!sort_msg_printed) {
-      std::cout << "Queued up " << n_warps << " in the SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << ". Start dispatching memory accesses." << std::endl;
-    //   sort_msg_printed = true;
-    // }
-    prev_n_warps = n_warps;
-    cycles_without_dispatching = 0;
+  // if (n_warps > 0 && prev_n_warps != n_warps)
+  // {
+  //   prev_n_warps = n_warps;
+  //   // std::cout << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
+  //   // if (!sort_msg_printed) {
+  //     std::cout << "Queued up " << n_warps << " in the SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << ". Start dispatching memory accesses." << std::endl;
+  //   //   sort_msg_printed = true;
+  //   // }
+  //   prev_n_warps = n_warps;
+  //   cycles_without_dispatching = 0;
 
-    // Tally up all the different memory accesses from all warps
-    std::map<uint8_t*, int> node_access_counts_per_treelet;
-    for (auto warp_inst : m_current_warps)
-    {
-      for (int i = 0; i < 32; i++)
-      {
-        warp_inst_t::per_thread_info thread_info = warp_inst.second.get_thread_info(i);
-        for (auto mem_access : thread_info.RT_mem_accesses)
-        {
-          // std::cout << mem_access.address << std::endl;
-          uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address);
-          node_access_counts_per_treelet[treelet_root_bin] += 1;
-        }
-      }
-    }
+  //   // Tally up all the different memory accesses from all warps
+  //   std::map<uint8_t*, int> node_access_counts_per_treelet;
+  //   for (auto warp_inst : m_current_warps)
+  //   {
+  //     for (int i = 0; i < 32; i++)
+  //     {
+  //       warp_inst_t::per_thread_info thread_info = warp_inst.second.get_thread_info(i);
+  //       for (auto mem_access : thread_info.RT_mem_accesses)
+  //       {
+  //         // std::cout << mem_access.address << std::endl;
+  //         uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address);
+  //         node_access_counts_per_treelet[treelet_root_bin] += 1;
+  //       }
+  //     }
+  //   }
 
-    // for (auto node : node_access_counts)
-    // {
-    //   std::cout << (void*) node.first << ", " << node.second << std::endl;
-    // }
+  //   // for (auto node : node_access_counts)
+  //   // {
+  //   //   std::cout << (void*) node.first << ", " << node.second << std::endl;
+  //   // }
 
-    // Sort each thread's bag of memory accesses
-    for (auto warp_inst : m_current_warps)
-    {
-      for (int i = 0; i < 32; i++)
-      {
-        //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
-        std::deque<RTMemoryTransactionRecord> mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
-        sort_mem_accesses(mem_accesses, node_access_counts_per_treelet);
-        warp_inst.second.get_thread_info(i).RT_mem_accesses = mem_accesses; // rewrite later by passing it directly into the function
-      }
-    }
-  }
+  //   // Sort each thread's bag of memory accesses
+  //   for (auto warp_inst : m_current_warps)
+  //   {
+  //     for (int i = 0; i < 32; i++)
+  //     {
+  //       //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
+  //       std::deque<RTMemoryTransactionRecord> mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+  //       sort_mem_accesses(mem_accesses, node_access_counts_per_treelet);
+  //       warp_inst.second.get_thread_info(i).RT_mem_accesses = mem_accesses; // rewrite later by passing it directly into the function
+  //     }
+  //   }
+  // }
 
   // Choose next warp
   warp_inst_t rt_inst;
@@ -3194,7 +3194,7 @@ void rt_unit::cycle() {
   if (!mem_access_q.empty()) {
     // Check if warp still exists
     if (m_current_warps.find(mem_access_q_warp_uid) == m_current_warps.end()) {
-      printf("Memory chunk original warp not found (w_uid: %d); erasing memory accesses starting with 0x%x.\n", mem_access_q_warp_uid, mem_access_q.front());
+      printf("Memory chunk original warp not found (w_uid: %d); erasing memory accesses starting with 0x%x.\n", mem_access_q_warp_uid, mem_access_q.front().first);
       mem_access_q.clear();
       if (mem_store_q.empty()) {
         schedule_next_warp(rt_inst);
@@ -3227,6 +3227,12 @@ void rt_unit::cycle() {
 
   // Schedule next memory request
   memory_cycle(rt_inst);
+
+  // Schedule a prefetch request if nothing was sent in memory_cycle
+  if (m_config->m_treelet_prefetch && prefetch_opportunity && !m_current_warps.empty()) {
+    warp_inst_t dummy_rt_inst = m_current_warps.begin()->second;
+    send_prefetch_request(dummy_rt_inst);
+  }
 
   // Place warp back
   if (!rt_inst.empty()) m_current_warps[rt_inst.get_uid()] = rt_inst;
@@ -3387,6 +3393,9 @@ void rt_unit::memory_cycle(warp_inst_t &inst) {
   mem_chunk = false;
   mem_fetch *mf;
   
+  prefetch_access = false;
+  prefetch_opportunity = false;
+
   // If there are still accesses waiting in mem_access_q, send those first
   if (!mem_access_q.empty()) {
     mem_chunk = true;
@@ -3411,14 +3420,20 @@ void rt_unit::memory_cycle(warp_inst_t &inst) {
     if (m_config->m_rt_max_warps > 0 && m_L0_complet->num_mshr_entries() > m_config->m_rt_max_mshr_entries) return;
     
     // Return if there are no active threads
-    if (!inst.active_count()) return;
-    
+    if (!inst.active_count()) {
+      prefetch_opportunity = true;
+      return;
+    }
+
     // If we make it here, there should be a valid warp to work with
     assert(inst.space.get_type() == global_space);
     
     // If waiting for responses, don't send new requests
-    if (!m_config->m_rt_coherence_engine && inst.is_stalled()) return;
-    
+    if (!m_config->m_rt_coherence_engine && inst.is_stalled()) {
+      prefetch_opportunity = true;
+      return;
+    }
+
     // If coherence engine is stalled, don't send new request
     // TODO: Fix the thread intersection latencies so this doesn't happen
     if (m_config->m_rt_coherence_engine && !m_ray_coherence_engine->active()) return;
@@ -3428,6 +3443,19 @@ void rt_unit::memory_cycle(warp_inst_t &inst) {
     mf = process_memory_access_queue(inst);
     if (mf) process_cache_access(m_config->m_rt_use_l1d ? (baseline_cache *)L1D : (baseline_cache *)m_L0_complet, inst, mf);
   }
+}
+
+
+void rt_unit::send_prefetch_request(warp_inst_t &inst) {
+  mem_fetch *mf;
+
+  if (!prefetch_mem_access_q.empty()) {
+    //TOMMY_DPRINTF("Sending prefetch request\n");
+    prefetch_access = true;
+    mf = process_prefetch_queue(inst);
+    if (mf) process_cache_access(m_config->m_rt_use_l1d ? (baseline_cache *)L1D : (baseline_cache *)m_L0_complet, inst, mf);
+  }
+  prefetch_access = false;
 }
 
 
@@ -3477,6 +3505,29 @@ mem_access_t rt_unit::create_mem_access(new_addr_type addr) {
 }
 
 
+mem_fetch* rt_unit::process_prefetch_queue(warp_inst_t &inst) {
+  assert(!prefetch_mem_access_q.empty());
+
+  new_addr_type next_addr = prefetch_mem_access_q.front().first;
+  new_addr_type base_addr = prefetch_mem_access_q.front().second;
+  //new_addr_type base_addr = mem_access_q_base_addr;
+  prefetch_mem_access_q.pop_front();
+
+  // Create the mem_access_t
+  mem_access_t access = create_mem_access(next_addr);
+  access.set_uncoalesced_base_addr(base_addr);
+  TOMMY_DPRINTF("Shader %d: Prefetching mem_access_t created for 0x%x (block address 0x%x, base address 0x%x, Cycle: %d)\n", m_sid, next_addr, access.get_addr(), base_addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+  
+  // Create mf
+  mem_fetch *mf = m_mf_allocator->alloc(
+    inst, access, m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle
+  ); 
+  mf->set_raytrace();
+  //m_stats->gpgpu_n_rt_mem[mem_access_q_type]++;
+  return mf;
+}
+
+
 mem_fetch* rt_unit::process_memory_stores() {
   assert(!mem_store_q.empty());
   
@@ -3522,8 +3573,9 @@ mem_fetch* rt_unit::process_memory_stores() {
 mem_fetch* rt_unit::process_memory_chunks(warp_inst_t &inst) {
   assert(!mem_access_q.empty());
 
-  new_addr_type next_addr = mem_access_q.front();
-  new_addr_type base_addr = mem_access_q_base_addr;
+  new_addr_type next_addr = mem_access_q.front().first;
+  new_addr_type base_addr = mem_access_q.front().second;
+  //new_addr_type base_addr = mem_access_q_base_addr;
   mem_access_q.pop_front();
 
   // Create the mem_access_t
@@ -3579,7 +3631,7 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
     
     // Create the memory chunks and push to mem_access_q
     for (unsigned i=1; i<((next_access.size+31)/32); i++) {
-      mem_access_q.push_back((new_addr_type)(next_access.address + (i * 32)));
+      mem_access_q.push_back(std::make_pair((new_addr_type)(next_access.address + (i * 32)), next_access.address));
       RT_DPRINTF("0x%x, ", next_access.address + (i * 32));
     }
     RT_DPRINTF("\n");
@@ -3596,6 +3648,32 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
   ); 
   mf->set_raytrace();
   m_stats->gpgpu_n_rt_mem[mem_access_q_type]++;
+
+
+  // Treelet Prefetching
+  if (m_config->m_treelet_prefetch && nodes_in_treelet.size() + prefetch_mem_access_q.size() <= 1000) {
+    if (last_prefetched_treelet != treelet_root) {
+      TOMMY_DPRINTF("Add Prefetching for Treelet root 0x%x\n", treelet_root);
+      for (int j = 1; j < nodes_in_treelet.size(); j++) { // nodes_in_treelet[0] is a duplicate
+        TOMMY_DPRINTF("Shader %d: Add Treelet prefetch. %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+        // Save the base address
+        mem_access_q_base_addr = (new_addr_type)nodes_in_treelet[j].addr;
+        // Save the warp id
+        mem_access_q_warp_uid = inst.get_uid();
+        
+        // Create the memory chunks and push to mem_access_q
+        for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
+          prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+          TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+        }
+        TOMMY_DPRINTF("\n");
+      }
+      last_prefetched_treelet = treelet_root;
+    }
+    // else {
+    //   TOMMY_DPRINTF("Shader %d: Same treelet prefetch already requested.\n", m_sid);
+    // }
+  }
 
   return mf;
 }
@@ -3696,8 +3774,29 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
       // Otherwise, the request cannot be handled this cycle
       else {
         RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
+        if (prefetch_access) {
+          prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
+        }
+        else {
+          if (mem_chunk) {
+            mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
+          }
+          else {
+            if (m_config->m_rt_coherence_engine) m_ray_coherence_engine->undo_access(mf->get_uncoalesced_addr());
+            else inst.undo_rt_access(mf->get_uncoalesced_addr());
+          }
+          m_stats->gpgpu_n_rt_mem[mem_access_q_type]--;
+        }
+      }
+    }
+    else {
+      RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
+      if (prefetch_access) {
+        prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
+      }
+      else {
         if (mem_chunk) {
-          mem_access_q.push_front(mf->get_uncoalesced_addr());
+          mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
         }
         else {
           if (m_config->m_rt_coherence_engine) m_ray_coherence_engine->undo_access(mf->get_uncoalesced_addr());
@@ -3705,17 +3804,6 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
         }
         m_stats->gpgpu_n_rt_mem[mem_access_q_type]--;
       }
-    }
-    else {
-      RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
-      if (mem_chunk) {
-        mem_access_q.push_front(mf->get_uncoalesced_addr());
-      }
-      else {
-        if (m_config->m_rt_coherence_engine) m_ray_coherence_engine->undo_access(mf->get_uncoalesced_addr());
-        else inst.undo_rt_access(mf->get_uncoalesced_addr());
-      }
-      m_stats->gpgpu_n_rt_mem[mem_access_q_type]--;
     }
     delete mf;
   }

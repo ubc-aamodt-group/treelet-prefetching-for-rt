@@ -293,6 +293,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_rt_intersection_table_type", OPT_UINT32, &m_rt_intersection_table_type,
       "type of intersection table",
       "0");
+  option_parser_register(
+      opp, "-treelet_prefetch", OPT_BOOL, &m_treelet_prefetch,
+      "prefetch treelets in process_memory_access_queue by populating the access q with treelet mfs",
+      "0");
   option_parser_register(opp, "-gpgpu_cache:il1", OPT_CSTR,
                          &m_L1I_config.m_config_string,
                          "shader L1 instruction cache config "
