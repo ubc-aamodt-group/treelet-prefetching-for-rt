@@ -3100,6 +3100,19 @@ void rt_unit::cycle() {
         if (m_config->m_rt_use_l1d) {
           L1D->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
                           m_core->get_gpu()->gpu_tot_sim_cycle);
+
+          // Prefetch fill time
+          if (mf->isprefetch()) {
+            new_addr_type prefetch_addr = mf->get_uncoalesced_addr();
+            unsigned prefetch_issue_time = mf->get_prefetch_issue_cycle();
+            for (auto &prefetch_info : prefetch_request_tracker) {
+              if (prefetch_info.m_prefetch_request_addr == prefetch_addr && prefetch_info.prefetch_issue_time == prefetch_issue_time) {
+                assert(prefetch_info.mf_request_uid == mf->get_request_uid());
+                prefetch_info.prefetch_fill_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+                break;
+              }
+            }
+          }
         }
         else {
           m_L0_complet->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
@@ -3376,7 +3389,53 @@ void rt_unit::process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg) {
 void rt_unit::schedule_next_warp(warp_inst_t &inst) {
   // Return if there are no warps in the RT unit
   if (m_current_warps.empty()) return;
-      
+  
+  else if (m_config->m_treelet_scheduler == 1)
+  {
+    // Find what is the most popular treelet amongst all warps that arent stalled
+    std::map<uint8_t*, unsigned int> treelet_root_histogram;
+    for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+      if (!((it->second).is_stalled())) {
+        inst = it->second;
+        for (int i = 0; i < 32; i++) {
+          RTMemoryTransactionRecord access = inst.get_RT_mem_accesses(i).front();
+          uint8_t* treelet_root = VulkanRayTracing::addrToTreeletID((uint8_t*)access.address);
+          treelet_root_histogram[treelet_root]++;
+        }
+      }
+    }
+
+    unsigned int max_val = 0;
+    uint8_t* max_bin = NULL;
+    for (auto bin : treelet_root_histogram) {
+      if (bin.second > max_val) {
+        max_val = bin.second;
+        max_bin = bin.first;
+      }
+    }
+
+    // Go through the warps and pick the first non stalled warps that needs to access that treelet next
+    bool found = false;
+    for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+      if (!((it->second).is_stalled())) { 
+        inst = it->second;
+        for (int i = 0; i < 32; i++) {
+          RTMemoryTransactionRecord access = inst.get_RT_mem_accesses(i).front();
+          uint8_t* treelet_root = VulkanRayTracing::addrToTreeletID((uint8_t*)access.address);
+          if (treelet_root == max_bin) {
+            found = true;
+            break;
+          }
+        }
+
+        if (found)
+          break;
+      }
+    }
+    if (!inst.empty()) m_current_warps.erase(inst.get_uid());
+    //TOMMY_DPRINTF("Treelet warp scheduler picked inst uid %d, accesses treelet 0x%x. Most popular treelet is 0x%x with %d accessses\n", inst.get_uid());
+  }
+
   // Otherwise, find the first non-stalled warp
   else {
     for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
@@ -3510,8 +3569,10 @@ mem_fetch* rt_unit::process_prefetch_queue(warp_inst_t &inst) {
 
   new_addr_type next_addr = prefetch_mem_access_q.front().first;
   new_addr_type base_addr = prefetch_mem_access_q.front().second;
+  unsigned prefetch_generation_cycle = prefetch_generation_cycles.front();
   //new_addr_type base_addr = mem_access_q_base_addr;
   prefetch_mem_access_q.pop_front();
+  prefetch_generation_cycles.pop_front();
 
   // Create the mem_access_t
   mem_access_t access = create_mem_access(next_addr);
@@ -3523,7 +3584,20 @@ mem_fetch* rt_unit::process_prefetch_queue(warp_inst_t &inst) {
     inst, access, m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle
   ); 
   mf->set_raytrace();
+  mf->set_prefetch();
+  mf->set_prefetch_generation_cycle(prefetch_generation_cycle);
+  mf->set_prefetch_issue_cycle(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
   //m_stats->gpgpu_n_rt_mem[mem_access_q_type]++;
+
+  // Prefetch Metadata
+  prefetch_block_info prefetch_info;
+  prefetch_info.mf_request_uid = mf->get_request_uid();
+  prefetch_info.m_prefetch_request_addr = next_addr;
+  prefetch_info.m_block_addr = L1D->get_cache_config().mshr_addr(next_addr); // should I use the mshr_addr or the cacheline address? probably mshr_addr since we are working with a sector cache
+  prefetch_info.prefetch_generation_time = prefetch_generation_cycle;
+  prefetch_info.prefetch_issue_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+  prefetch_request_tracker.push_back(prefetch_info);
+
   return mf;
 }
 
@@ -3664,6 +3738,7 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
         // Create the memory chunks and push to mem_access_q
         for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
           prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+          prefetch_generation_cycles.push_back(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
           TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
         }
         TOMMY_DPRINTF("\n");
@@ -3776,6 +3851,8 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
         RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
         if (prefetch_access) {
           prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
+          prefetch_generation_cycles.push_front(mf->get_prefetch_generation_cycle());
+          prefetch_request_tracker.pop_back();
         }
         else {
           if (mem_chunk) {
@@ -3793,6 +3870,8 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
       RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
       if (prefetch_access) {
         prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
+        prefetch_generation_cycles.push_front(mf->get_prefetch_generation_cycle());
+        prefetch_request_tracker.pop_back();
       }
       else {
         if (mem_chunk) {

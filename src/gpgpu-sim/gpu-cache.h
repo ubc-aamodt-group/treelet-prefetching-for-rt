@@ -81,6 +81,41 @@ struct evicted_block_info {
   }
 };
 
+
+struct prefetch_block_info {
+  unsigned mf_request_uid;
+  new_addr_type m_prefetch_request_addr;
+  new_addr_type m_block_addr; // use block addr to match entries
+  unsigned prefetch_generation_time;
+  unsigned prefetch_issue_time;
+  unsigned prefetch_fill_time;
+  unsigned fill_index;
+  unsigned evict_time;
+  unsigned last_accessed_time_by_demand_load; // last access time by a non prefetch mf
+  unsigned times_accessed; // times accessed by a non prefetch mf
+  prefetch_request_effectiveness effectiveness;
+  unsigned times_classified_as_first_classification;
+  unsigned total_times_classified;
+  unsigned cycle_classified;
+
+  prefetch_block_info() {
+    mf_request_uid = 0;
+    m_prefetch_request_addr = 0;
+    m_block_addr = 0;
+    prefetch_generation_time = 0;
+    prefetch_issue_time = 0;
+    prefetch_fill_time = 0;
+    fill_index = (unsigned)-1;
+    evict_time = 0;
+    last_accessed_time_by_demand_load = 0;
+    times_accessed = 0;
+    effectiveness = UNCLASSIFIED;
+    times_classified_as_first_classification = 0;
+    total_times_classified = 0;
+    cycle_classified = 0;
+  }
+};
+
 struct cache_event {
   enum cache_event_type m_cache_event_type;
   evicted_block_info m_evicted_block;  // if it was write_back event, fill the
@@ -108,7 +143,7 @@ struct cache_block_t {
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
                         unsigned time,
                         mem_access_sector_mask_t sector_mask) = 0;
-  virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask) = 0;
+  virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask, mem_fetch *mf = nullptr) = 0;
 
   virtual bool is_invalid_line() = 0;
   virtual bool is_valid_line() = 0;
@@ -132,6 +167,12 @@ struct cache_block_t {
   virtual void set_m_readable(bool readable,
                               mem_access_sector_mask_t sector_mask) = 0;
   virtual bool is_readable(mem_access_sector_mask_t sector_mask) = 0;
+
+  virtual cache_fill_source get_line_fill_source() = 0;
+  virtual cache_fill_source get_sector_fill_source(mem_access_sector_mask_t sector_mask) = 0;
+  virtual unsigned get_line_fill_mf_request_uid() = 0;
+  virtual unsigned get_sector_fill_mf_request_uid(mem_access_sector_mask_t sector_mask) = 0;
+
   virtual void print_status() = 0;
   virtual ~cache_block_t() {}
 
@@ -143,6 +184,8 @@ struct line_cache_block : public cache_block_t {
   line_cache_block() {
     m_alloc_time = 0;
     m_fill_time = 0;
+    m_fill_source = UNDEFINED_SOURCE;
+    m_fill_mf_request_uid = 0;
     m_last_access_time = 0;
     m_status = INVALID;
     m_ignore_on_fill_status = false;
@@ -160,13 +203,24 @@ struct line_cache_block : public cache_block_t {
     m_ignore_on_fill_status = false;
     m_set_modified_on_fill = false;
   }
-  void fill(unsigned time, mem_access_sector_mask_t sector_mask) {
+  void fill(unsigned time, mem_access_sector_mask_t sector_mask, mem_fetch *mf = nullptr) {
     // if(!m_ignore_on_fill_status)
     //	assert( m_status == RESERVED );
 
     m_status = m_set_modified_on_fill ? MODIFIED : VALID;
 
     m_fill_time = time;
+
+    if (mf) {
+      if (mf->isprefetch()) {
+        m_fill_source = PREFETCH;
+        m_fill_mf_request_uid = mf->get_request_uid();
+      }
+      else {
+        m_fill_source = DEMAND_LOAD;
+        m_fill_mf_request_uid = mf->get_request_uid();
+      }
+    }
   }
   virtual bool is_invalid_line() { return m_status == INVALID; }
   virtual bool is_valid_line() { return m_status == VALID; }
@@ -210,11 +264,17 @@ struct line_cache_block : public cache_block_t {
   virtual void print_status() {
     printf("m_block_addr is %llu, status = %u\n", m_block_addr, m_status);
   }
+  virtual cache_fill_source get_line_fill_source() { return m_fill_source; }
+  virtual cache_fill_source get_sector_fill_source(mem_access_sector_mask_t sector_mask) { return m_fill_source; }
+  virtual unsigned get_line_fill_mf_request_uid() { return m_fill_mf_request_uid; }
+  virtual unsigned get_sector_fill_mf_request_uid(mem_access_sector_mask_t sector_mask) { return m_fill_mf_request_uid; }
 
  private:
   unsigned long long m_alloc_time;
   unsigned long long m_last_access_time;
   unsigned long long m_fill_time;
+  cache_fill_source m_fill_source;
+  unsigned m_fill_mf_request_uid;
   cache_block_state m_status;
   bool m_ignore_on_fill_status;
   bool m_set_modified_on_fill;
@@ -228,6 +288,8 @@ struct sector_cache_block : public cache_block_t {
     for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; ++i) {
       m_sector_alloc_time[i] = 0;
       m_sector_fill_time[i] = 0;
+      m_sector_fill_source[i] = UNDEFINED_SOURCE;
+      m_sector_fill_mf_request_uid[i] = 0;
       m_last_sector_access_time[i] = 0;
       m_status[i] = INVALID;
       m_ignore_on_fill_status[i] = false;
@@ -237,6 +299,8 @@ struct sector_cache_block : public cache_block_t {
     m_line_alloc_time = 0;
     m_line_last_access_time = 0;
     m_line_fill_time = 0;
+    m_line_fill_source = UNDEFINED_SOURCE;
+    m_line_fill_mf_request_uid = 0;
   }
 
   virtual void allocate(new_addr_type tag, new_addr_type block_addr,
@@ -293,7 +357,7 @@ struct sector_cache_block : public cache_block_t {
     m_line_fill_time = 0;
   }
 
-  virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask) {
+  virtual void fill(unsigned time, mem_access_sector_mask_t sector_mask, mem_fetch *mf = nullptr) {
     unsigned sidx = get_sector_index(sector_mask);
 
     //	if(!m_ignore_on_fill_status[sidx])
@@ -303,6 +367,21 @@ struct sector_cache_block : public cache_block_t {
 
     m_sector_fill_time[sidx] = time;
     m_line_fill_time = time;
+
+    if (mf) {
+      if (mf->isprefetch()) {
+        m_sector_fill_source[sidx] = PREFETCH;
+        m_sector_fill_mf_request_uid[sidx] = mf->get_request_uid();
+        m_line_fill_source = PREFETCH;
+        m_line_fill_mf_request_uid = mf->get_request_uid();
+      }
+      else {
+        m_sector_fill_source[sidx] = DEMAND_LOAD;
+        m_sector_fill_mf_request_uid[sidx] = mf->get_request_uid();
+        m_line_fill_source = DEMAND_LOAD;
+        m_line_fill_mf_request_uid = mf->get_request_uid();
+      }
+    }
   }
   virtual bool is_invalid_line() {
     // all the sectors should be invalid
@@ -390,13 +469,29 @@ struct sector_cache_block : public cache_block_t {
            m_status[0], m_status[1], m_status[2], m_status[3]);
   }
 
+  virtual cache_fill_source get_line_fill_source() { return m_line_fill_source; }
+  virtual cache_fill_source get_sector_fill_source(mem_access_sector_mask_t sector_mask) {
+    unsigned sidx = get_sector_index(sector_mask);
+    return m_sector_fill_source[sidx]; 
+  }
+  virtual unsigned get_line_fill_mf_request_uid() { return m_line_fill_mf_request_uid; }
+  virtual unsigned get_sector_fill_mf_request_uid(mem_access_sector_mask_t sector_mask) {
+    unsigned sidx = get_sector_index(sector_mask);
+    return m_sector_fill_mf_request_uid[sidx]; 
+  }
+
+
  private:
   unsigned m_sector_alloc_time[SECTOR_CHUNCK_SIZE];
   unsigned m_last_sector_access_time[SECTOR_CHUNCK_SIZE];
   unsigned m_sector_fill_time[SECTOR_CHUNCK_SIZE];
+  cache_fill_source m_sector_fill_source[SECTOR_CHUNCK_SIZE];
+  unsigned m_sector_fill_mf_request_uid[SECTOR_CHUNCK_SIZE];
   unsigned m_line_alloc_time;
   unsigned m_line_last_access_time;
   unsigned m_line_fill_time;
+  cache_fill_source m_line_fill_source;
+  unsigned m_line_fill_mf_request_uid;
   cache_block_state m_status[SECTOR_CHUNCK_SIZE];
   bool m_ignore_on_fill_status[SECTOR_CHUNCK_SIZE];
   bool m_set_modified_on_fill[SECTOR_CHUNCK_SIZE];
@@ -832,7 +927,7 @@ class tag_array {
 
   void fill(new_addr_type addr, unsigned time, mem_fetch *mf);
   void fill(unsigned idx, unsigned time, mem_fetch *mf);
-  void fill(new_addr_type addr, unsigned time, mem_access_sector_mask_t mask);
+  void fill(new_addr_type addr, unsigned time, mem_access_sector_mask_t mask, mem_fetch *mf = nullptr);
 
   unsigned size() const { return m_config.get_num_lines(); }
   cache_block_t *get_block(unsigned idx) { return m_lines[idx]; }
@@ -850,6 +945,9 @@ class tag_array {
   void update_cache_parameters(cache_config &config);
   void add_pending_line(mem_fetch *mf);
   void remove_pending_line(mem_fetch *mf);
+  cache_block_t ** get_m_lines(){ return m_lines; }
+  int get_m_core_id() { return m_core_id; }
+  int get_m_type_id() { return m_type_id; }
 
  protected:
   // This constructor is intended for use only from derived classes that wish to
@@ -946,6 +1044,9 @@ class mshr_table {
   // it may take several cycles to process the merged requests
   bool m_current_response_ready;
   std::list<new_addr_type> m_current_response;
+
+public:
+  table get_m_data() { return m_data; }
 };
 
 /***************************************************************** Caches
@@ -1240,6 +1341,8 @@ class baseline_cache : public cache_t {
                         mem_access_sector_mask_t mask) {
     m_tag_array->fill(addr, time, mask);
   }
+
+  cache_config get_cache_config() { return m_config; }
 
  protected:
   // Constructor that can be used by derived classes with custom tag arrays

@@ -297,6 +297,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-treelet_prefetch", OPT_BOOL, &m_treelet_prefetch,
       "prefetch treelets in process_memory_access_queue by populating the access q with treelet mfs",
       "0");
+  option_parser_register(
+      opp, "-treelet_scheduler", OPT_UINT32, &m_treelet_scheduler,
+      "overrides the default rt unit scheduler with a treelet scheduler",
+      "0");
   option_parser_register(opp, "-gpgpu_cache:il1", OPT_CSTR,
                          &m_L1I_config.m_config_string,
                          "shader L1 instruction cache config "
@@ -1437,6 +1441,29 @@ void gpgpu_sim::gpu_print_stat() {
   // for (auto block : block_addr_merge_tracker) {
   //   fprintf(statfout, "0x%lx: %d\n", block.first, block.second);
   // }
+
+  std::vector<unsigned> total_prefetch_effectiveness = {0, 0, 0, 0, 0};
+  std::vector<unsigned> prefetch_effectiveness_per_cluster; // TOO_LATE:{0,0,0...,0,0}, LATE:{0,0,0,0,0},....
+  for(int n=0; n < m_config.num_cluster() * 5; n++) prefetch_effectiveness_per_cluster.push_back((unsigned)0);
+
+  for (unsigned i = 0; i < m_config.num_cluster(); i++) {
+    std::vector<prefetch_block_info> prefetch_request_tracker = m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+    for (auto &prefetch_info : prefetch_request_tracker) {
+      if (prefetch_info.effectiveness == UNCLASSIFIED) {
+        prefetch_info.effectiveness = NEVER_USED;
+      }
+      total_prefetch_effectiveness[prefetch_info.effectiveness]++;
+      prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
+    }
+  }
+  fprintf(statfout, "Prefetch Effectiveness per cluster: [Clusters 0, ..., N, Total Sum]\n");
+  for (int i = 0; i < 5; i++) {
+    for (int j = 0; j < m_config.num_cluster(); j++) {
+      fprintf(statfout, "%d ", prefetch_effectiveness_per_cluster[i * m_config.num_cluster() + j]);
+    }
+    fprintf(statfout, "%d\n", total_prefetch_effectiveness[i]);
+  }
+  fprintf(statfout, "\n");
 
 
   shader_print_cache_stats(statfout);

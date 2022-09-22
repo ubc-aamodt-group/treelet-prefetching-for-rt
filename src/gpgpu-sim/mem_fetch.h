@@ -106,6 +106,17 @@ class mem_fetch {
   bool israytrace() const { return m_inst.empty() ? false : m_inst.op == RT_CORE_OP || m_israytrace; }
   void set_raytrace() {m_israytrace = true; }
 
+  bool isprefetch() const { return m_isprefetch; }
+  void set_prefetch() {m_isprefetch = true; }
+  unsigned get_prefetch_generation_cycle() { return m_prefetch_generation_cycle; }
+  void set_prefetch_generation_cycle(unsigned cycle) { m_prefetch_generation_cycle = cycle; }
+  unsigned get_prefetch_issue_cycle() { return m_prefetch_issue_cycle; }
+  void set_prefetch_issue_cycle(unsigned cycle) { m_prefetch_issue_cycle = cycle; }
+  unsigned get_prefetch_fill_cycle() { return m_prefetch_fill_cycle; }
+  void set_prefetch_fill_cycle(unsigned cycle) { m_prefetch_fill_cycle = cycle; }
+  prefetch_access_status get_prefetch_access_status() { return prefetch_status; }
+  void set_prefetch_access_status(prefetch_access_status status) { prefetch_status = status; }
+
   void set_return_timestamp(unsigned t) { m_timestamp2 = t; }
   void set_icnt_receive_time(unsigned t) { m_icnt_receive_time = t; }
   unsigned get_timestamp() const { return m_timestamp; }
@@ -170,6 +181,12 @@ class mem_fetch {
   warp_inst_t m_inst;
   
   bool m_israytrace;
+
+  bool m_isprefetch;
+  unsigned m_prefetch_generation_cycle;
+  unsigned m_prefetch_issue_cycle;
+  unsigned m_prefetch_fill_cycle;
+  prefetch_access_status prefetch_status;
 
   static unsigned sm_next_mf_request_uid;
 

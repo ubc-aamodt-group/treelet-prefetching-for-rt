@@ -578,6 +578,8 @@ class gpgpu_sim : public gpgpu_t {
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
 
+  simt_core_cluster** get_m_cluster() { return m_cluster; }
+
  private:
   // clocks
   void reinit_clock_domains(void);

@@ -213,6 +213,30 @@ enum rt_ray_status {
 };
 
 
+enum prefetch_request_effectiveness {
+  TOO_LATE = 0,
+  LATE,
+  TIMELY,
+  TOO_EARLY,
+  NEVER_USED,
+  UNCLASSIFIED,
+};
+
+
+enum prefetch_access_status {
+  UNDEFINED = 0,
+  MISS_AND_LOAD_FROM_MEM,
+  MISS_BUT_MSHR_MERGE,
+  HIT_IN_CACHE,
+};
+
+
+enum cache_fill_source {
+  UNDEFINED_SOURCE = 0,
+  DEMAND_LOAD,
+  PREFETCH,
+};
+
 #define RT_WRITE_BACK_SIZE 32
 
 #include <assert.h>
@@ -1512,6 +1536,7 @@ class warp_inst_t : public inst_t {
   bool rt_intersection_delay_done();
   bool has_pending_writes() { return !m_pending_writes.empty(); }
   bool rt_mem_accesses_empty(unsigned int tid) { return m_per_scalar_thread[tid].RT_mem_accesses.empty(); };
+  std::deque<RTMemoryTransactionRecord> get_RT_mem_accesses(unsigned int tid) { return m_per_scalar_thread[tid].RT_mem_accesses; }
   bool is_stalled();
   void undo_rt_access(new_addr_type addr);
   void print_rt_accesses();

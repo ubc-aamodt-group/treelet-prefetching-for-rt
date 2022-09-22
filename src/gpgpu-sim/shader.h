@@ -1312,6 +1312,9 @@ class rt_unit : public pipelined_simd_unit {
         // Prefetching
         void send_prefetch_request(warp_inst_t &inst);
         mem_fetch* process_prefetch_queue(warp_inst_t &inst);
+
+        // Prefetching stats
+        std::vector<prefetch_block_info> prefetch_request_tracker;
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -1350,7 +1353,7 @@ class rt_unit : public pipelined_simd_unit {
 
       std::deque<std::pair<unsigned, new_addr_type> > mem_store_q;
       
-      std::deque<std::pair<new_addr_type ,new_addr_type>> mem_access_q; // chunk addr, base addr
+      std::deque<std::pair<new_addr_type, new_addr_type>> mem_access_q; // chunk addr, base addr
       unsigned mem_access_q_warp_uid;
       new_addr_type mem_access_q_base_addr;
       int mem_access_q_type;
@@ -1375,7 +1378,8 @@ class rt_unit : public pipelined_simd_unit {
       // Prefetching
       uint8_t* last_prefetched_treelet = NULL;
       bool prefetch_opportunity = false;
-      std::deque<std::pair<new_addr_type ,new_addr_type>> prefetch_mem_access_q; // chunk addr, base addr
+      std::deque<std::pair<new_addr_type, new_addr_type>> prefetch_mem_access_q; // chunk addr, base addr
+      std::deque<unsigned> prefetch_generation_cycles; // used to record prefetch req generation cycles so it can be added to the mem_fetch later
       bool prefetch_access = false;
 };
 
@@ -1805,6 +1809,7 @@ class shader_core_config : public core_config {
   bool bypassL0Complet;
   unsigned m_rt_intersection_table_type;
   bool m_treelet_prefetch;
+  unsigned m_treelet_scheduler;
 };
 
 struct shader_core_stats_pod {
@@ -2237,6 +2242,8 @@ class shader_core_ctx : public core_t {
   kernel_info_t *get_kernel() { return m_kernel; }
   unsigned get_sid() const { return m_sid; }
   unsigned get_tpc() const { return m_tpc; }
+  
+  rt_unit* get_m_rt_unit(){ return m_rt_unit; }
 
   // used by functional simulation:
   // modifiers
@@ -2702,6 +2709,8 @@ class simt_core_cluster {
   float get_current_occupancy(unsigned long long &active,
                               unsigned long long &total) const;
   virtual void create_shader_core_ctx() = 0;
+
+  shader_core_ctx** get_m_core() { return m_core; }
 
  protected:
   unsigned m_cluster_id;
