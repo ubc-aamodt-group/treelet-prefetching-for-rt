@@ -294,6 +294,14 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "type of intersection table",
       "0");
   option_parser_register(
+      opp, "-treelet_queue", OPT_BOOL, &m_treelet_queue,
+      "queue up RT unit warps until a certain amount",
+      "0");
+  option_parser_register(
+      opp, "-treelet_queue_wait_cycle", OPT_UINT32, &m_treelet_queue_wait_cycle,
+      "type of intersection table",
+      "5000");
+  option_parser_register(
       opp, "-treelet_prefetch", OPT_BOOL, &m_treelet_prefetch,
       "prefetch treelets in process_memory_access_queue by populating the access q with treelet mfs",
       "0");
@@ -1447,14 +1455,24 @@ void gpgpu_sim::gpu_print_stat() {
   for(int n=0; n < m_config.num_cluster() * 5; n++) prefetch_effectiveness_per_cluster.push_back((unsigned)0);
 
   for (unsigned i = 0; i < m_config.num_cluster(); i++) {
-    std::vector<prefetch_block_info> prefetch_request_tracker = m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
-    for (auto &prefetch_info : prefetch_request_tracker) {
-      if (prefetch_info.effectiveness == UNCLASSIFIED) {
-        prefetch_info.effectiveness = NEVER_USED;
+    std::map<new_addr_type, std::vector<prefetch_block_info>> prefetch_request_tracker = m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+    for (auto vec : prefetch_request_tracker) {
+      for (auto prefetch_info : vec.second) {
+        if (prefetch_info.effectiveness == UNCLASSIFIED) {
+          prefetch_info.effectiveness = NEVER_USED;
+        }
+        total_prefetch_effectiveness[prefetch_info.effectiveness]++;
+        prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
       }
-      total_prefetch_effectiveness[prefetch_info.effectiveness]++;
-      prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
     }
+    // std::vector<prefetch_block_info> prefetch_request_tracker = m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+    // for (auto &prefetch_info : prefetch_request_tracker) {
+    //   if (prefetch_info.effectiveness == UNCLASSIFIED) {
+    //     prefetch_info.effectiveness = NEVER_USED;
+    //   }
+    //   total_prefetch_effectiveness[prefetch_info.effectiveness]++;
+    //   prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
+    // }
   }
   fprintf(statfout, "Prefetch Effectiveness per cluster: [Clusters 0, ..., N, Total Sum]\n");
   for (int i = 0; i < 5; i++) {

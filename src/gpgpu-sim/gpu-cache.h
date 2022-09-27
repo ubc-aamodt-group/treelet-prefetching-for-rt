@@ -85,7 +85,7 @@ struct evicted_block_info {
 struct prefetch_block_info {
   unsigned mf_request_uid;
   new_addr_type m_prefetch_request_addr;
-  new_addr_type m_block_addr; // use block addr to match entries
+  new_addr_type m_block_addr; // use block addr to match entries (MSHR address)
   unsigned prefetch_generation_time;
   unsigned prefetch_issue_time;
   unsigned prefetch_fill_time;

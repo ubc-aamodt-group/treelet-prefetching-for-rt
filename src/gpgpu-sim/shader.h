@@ -1314,7 +1314,8 @@ class rt_unit : public pipelined_simd_unit {
         mem_fetch* process_prefetch_queue(warp_inst_t &inst);
 
         // Prefetching stats
-        std::vector<prefetch_block_info> prefetch_request_tracker;
+        //std::vector<prefetch_block_info> prefetch_request_tracker;
+        std::map<new_addr_type, std::vector<prefetch_block_info>> prefetch_request_tracker; // mshr_addr, list of prefetches belonging to that addr
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -1371,9 +1372,15 @@ class rt_unit : public pipelined_simd_unit {
       unsigned cacheline_count;
 
       // Treelets
+      unsigned total_cycles_without_dispatching = 0;
       unsigned cycles_without_dispatching = 0;
       bool sort_msg_printed = false;
       unsigned int prev_n_warps = 0;
+
+      // Queueing up warps
+      bool sorted = false;
+      bool ready_to_process_warp_buffer = false;
+      bool accept_new_warps = true;
 
       // Prefetching
       uint8_t* last_prefetched_treelet = NULL;
@@ -1810,6 +1817,8 @@ class shader_core_config : public core_config {
   unsigned m_rt_intersection_table_type;
   bool m_treelet_prefetch;
   unsigned m_treelet_scheduler;
+  bool m_treelet_queue;
+  unsigned m_treelet_queue_wait_cycle;
 };
 
 struct shader_core_stats_pod {

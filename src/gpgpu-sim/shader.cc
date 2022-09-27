@@ -3104,14 +3104,25 @@ void rt_unit::cycle() {
           // Prefetch fill time
           if (mf->isprefetch()) {
             new_addr_type prefetch_addr = mf->get_uncoalesced_addr();
+            new_addr_type mshr_addr = L1D->get_cache_config().mshr_addr(prefetch_addr);
             unsigned prefetch_issue_time = mf->get_prefetch_issue_cycle();
-            for (auto &prefetch_info : prefetch_request_tracker) {
-              if (prefetch_info.m_prefetch_request_addr == prefetch_addr && prefetch_info.prefetch_issue_time == prefetch_issue_time) {
-                assert(prefetch_info.mf_request_uid == mf->get_request_uid());
-                prefetch_info.prefetch_fill_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
-                break;
+            if (prefetch_request_tracker.count(mshr_addr)) {
+              for (auto &prefetch_info : prefetch_request_tracker[mshr_addr]) {
+                if (prefetch_info.m_prefetch_request_addr == prefetch_addr && prefetch_info.prefetch_issue_time == prefetch_issue_time) {
+                  assert(prefetch_info.mf_request_uid == mf->get_request_uid());
+                  prefetch_info.prefetch_fill_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+                  break;
+                }
               }
             }
+
+            // for (auto &prefetch_info : prefetch_request_tracker) {
+            //   if (prefetch_info.m_prefetch_request_addr == prefetch_addr && prefetch_info.prefetch_issue_time == prefetch_issue_time) {
+            //     assert(prefetch_info.mf_request_uid == mf->get_request_uid());
+            //     prefetch_info.prefetch_fill_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+            //     break;
+            //   }
+            // }
           }
         }
         else {
@@ -3145,60 +3156,123 @@ void rt_unit::cycle() {
 
   // For Treelet Limit Study
   // Accumulate enough warps before dispatching memory accesses so we can take advantage of treelets
-  // if ((n_warps < m_config->max_warps_per_shader && n_warps < m_config->max_cta_per_core) && cycles_without_dispatching < 5000 && n_warps > 0) // TODO: should also add some cycle limit condition in case theres never enough warps to queue up
-  // {
-  //   if (prev_n_warps != n_warps)
-  //     std::cout << "Queued up " << n_warps << " in SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
-  //   prev_n_warps = n_warps;
-  //   // sort_msg_printed = false;
-  //   cycles_without_dispatching++;
-  //   return;
-  // }
+  if (m_config->m_treelet_queue) {
 
-  // if (n_warps > 0 && prev_n_warps != n_warps)
-  // {
-  //   prev_n_warps = n_warps;
-  //   // std::cout << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
-  //   // if (!sort_msg_printed) {
-  //     std::cout << "Queued up " << n_warps << " in the SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << ". Start dispatching memory accesses." << std::endl;
-  //   //   sort_msg_printed = true;
-  //   // }
-  //   prev_n_warps = n_warps;
-  //   cycles_without_dispatching = 0;
+    // Queue up new warps
+    if (n_warps < m_config->m_rt_max_warps && cycles_without_dispatching < m_config->m_treelet_queue_wait_cycle && accept_new_warps) {
+      if (n_warps > 0) { // Only start counting if a warp is waiting in the warp buffer
+        cycles_without_dispatching++;
+        total_cycles_without_dispatching++;
+      }
+      
+      // If a new warp comes in
+      if (prev_n_warps != n_warps && n_warps > 0) {
+        WARP_QUEUE_DPRINTF("SM %d Queued up %d warps in RT unit, cycles between warps: %d, total delay: %d, Cycle: %d\n", m_sid, n_warps, cycles_without_dispatching, total_cycles_without_dispatching, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+        cycles_without_dispatching = 0;
+      }
+      prev_n_warps = n_warps;
 
-  //   // Tally up all the different memory accesses from all warps
-  //   std::map<uint8_t*, int> node_access_counts_per_treelet;
-  //   for (auto warp_inst : m_current_warps)
-  //   {
-  //     for (int i = 0; i < 32; i++)
-  //     {
-  //       warp_inst_t::per_thread_info thread_info = warp_inst.second.get_thread_info(i);
-  //       for (auto mem_access : thread_info.RT_mem_accesses)
-  //       {
-  //         // std::cout << mem_access.address << std::endl;
-  //         uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address);
-  //         node_access_counts_per_treelet[treelet_root_bin] += 1;
-  //       }
-  //     }
-  //   }
+      return;
+    }
 
-  //   // for (auto node : node_access_counts)
-  //   // {
-  //   //   std::cout << (void*) node.first << ", " << node.second << std::endl;
-  //   // }
+    // Enough warps are queued up or wait cycles exceeds threshold
+    accept_new_warps = false;
+    
+    // Sort accesses in the warps
+    if (!sorted) {
+      cycles_without_dispatching = 0;
+      WARP_QUEUE_DPRINTF("SM %d Sorting RT Accesses across %d, Cycle: %d\n", m_sid, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+      
+      // Tally up all the different memory accesses from all warps
+      std::map<uint8_t*, int> node_access_counts_per_treelet;
+      for (auto warp_inst : m_current_warps)
+      {
+        for (int i = 0; i < 32; i++)
+        {
+          warp_inst_t::per_thread_info thread_info = warp_inst.second.get_thread_info(i);
+          for (auto mem_access : thread_info.RT_mem_accesses)
+          {
+            // std::cout << mem_access.address << std::endl;
+            uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address);
+            node_access_counts_per_treelet[treelet_root_bin] += 1;
+          }
+        }
+      }
 
-  //   // Sort each thread's bag of memory accesses
-  //   for (auto warp_inst : m_current_warps)
-  //   {
-  //     for (int i = 0; i < 32; i++)
-  //     {
-  //       //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
-  //       std::deque<RTMemoryTransactionRecord> mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
-  //       sort_mem_accesses(mem_accesses, node_access_counts_per_treelet);
-  //       warp_inst.second.get_thread_info(i).RT_mem_accesses = mem_accesses; // rewrite later by passing it directly into the function
-  //     }
-  //   }
-  // }
+      // Sort each thread's bag of memory accesses
+      for (auto warp_inst : m_current_warps)
+      {
+        for (int i = 0; i < 32; i++)
+        {
+          //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
+          std::deque<RTMemoryTransactionRecord> mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+          sort_mem_accesses(mem_accesses, node_access_counts_per_treelet);
+          warp_inst.second.get_thread_info(i).RT_mem_accesses = mem_accesses; // rewrite later by passing it directly into the function
+        }
+      }
+
+      sorted = true; // Don't sort anymore until this warp buffer is cleared out
+    }
+
+
+
+    // if ((n_warps < m_config->max_warps_per_shader && n_warps < m_config->max_cta_per_core) && cycles_without_dispatching < m_config->m_treelet_queue_wait_cycle && n_warps > 0) // TODO: should also add some cycle limit condition in case theres never enough warps to queue up
+    // {
+    //   if (prev_n_warps != n_warps)
+    //     std::cout << "Queued up " << n_warps << " in SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
+    //   prev_n_warps = n_warps;
+    //   // sort_msg_printed = false;
+    //   cycles_without_dispatching++;
+    //   return;
+    // }
+
+    // if (n_warps > 0 && prev_n_warps != n_warps)
+    // {
+    //   prev_n_warps = n_warps;
+    //   // std::cout << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
+    //   // if (!sort_msg_printed) {
+    //     std::cout << "Queued up " << n_warps << " in the SM " << m_sid << " RT unit at cycle " << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << ". Start dispatching memory accesses." << std::endl;
+    //   //   sort_msg_printed = true;
+    //   // }
+    //   prev_n_warps = n_warps;
+    //   cycles_without_dispatching = 0;
+
+    //   // Tally up all the different memory accesses from all warps
+    //   std::map<uint8_t*, int> node_access_counts_per_treelet;
+    //   for (auto warp_inst : m_current_warps)
+    //   {
+    //     for (int i = 0; i < 32; i++)
+    //     {
+    //       warp_inst_t::per_thread_info thread_info = warp_inst.second.get_thread_info(i);
+    //       for (auto mem_access : thread_info.RT_mem_accesses)
+    //       {
+    //         // std::cout << mem_access.address << std::endl;
+    //         uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address);
+    //         node_access_counts_per_treelet[treelet_root_bin] += 1;
+    //       }
+    //     }
+    //   }
+
+    //   // for (auto node : node_access_counts)
+    //   // {
+    //   //   std::cout << (void*) node.first << ", " << node.second << std::endl;
+    //   // }
+
+    //   // Sort each thread's bag of memory accesses
+    //   for (auto warp_inst : m_current_warps)
+    //   {
+    //     for (int i = 0; i < 32; i++)
+    //     {
+    //       //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
+    //       std::deque<RTMemoryTransactionRecord> mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+    //       sort_mem_accesses(mem_accesses, node_access_counts_per_treelet);
+    //       warp_inst.second.get_thread_info(i).RT_mem_accesses = mem_accesses; // rewrite later by passing it directly into the function
+    //     }
+    //   }
+    // }
+  }
+
+  WARP_QUEUE_DPRINTF("SM %d Processing %d warps, Cycle: %d\n", m_sid, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
 
   // Choose next warp
   warp_inst_t rt_inst;
@@ -3316,6 +3390,14 @@ void rt_unit::cycle() {
   // Remove complete warp
   if (completed_warp_uid >= 0) {
     m_current_warps.erase(completed_warp_uid);
+  }
+
+  if (m_config->m_treelet_queue) {
+    if (m_current_warps.empty()) {
+      WARP_QUEUE_DPRINTF("SM %d finished processing current batch of insts, Cycle %d\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+      accept_new_warps = true;
+      sorted = false;
+    }
   }
   
   assert(n_warps == m_current_warps.size());
@@ -3596,7 +3678,7 @@ mem_fetch* rt_unit::process_prefetch_queue(warp_inst_t &inst) {
   prefetch_info.m_block_addr = L1D->get_cache_config().mshr_addr(next_addr); // should I use the mshr_addr or the cacheline address? probably mshr_addr since we are working with a sector cache
   prefetch_info.prefetch_generation_time = prefetch_generation_cycle;
   prefetch_info.prefetch_issue_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
-  prefetch_request_tracker.push_back(prefetch_info);
+  prefetch_request_tracker[prefetch_info.m_block_addr].push_back(prefetch_info);
 
   return mf;
 }
@@ -3852,7 +3934,7 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
         if (prefetch_access) {
           prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
           prefetch_generation_cycles.push_front(mf->get_prefetch_generation_cycle());
-          prefetch_request_tracker.pop_back();
+          prefetch_request_tracker[cache->get_cache_config().mshr_addr(mf->get_uncoalesced_addr())].pop_back();
         }
         else {
           if (mem_chunk) {
@@ -3871,7 +3953,7 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
       if (prefetch_access) {
         prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
         prefetch_generation_cycles.push_front(mf->get_prefetch_generation_cycle());
-        prefetch_request_tracker.pop_back();
+        prefetch_request_tracker[cache->get_cache_config().mshr_addr(mf->get_uncoalesced_addr())].pop_back();
       }
       else {
         if (mem_chunk) {

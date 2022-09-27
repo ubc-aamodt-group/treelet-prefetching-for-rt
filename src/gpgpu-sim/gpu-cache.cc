@@ -399,13 +399,30 @@ void tag_array::fill(new_addr_type addr, unsigned time,
     if (m_lines[idx]->get_line_fill_source() == PREFETCH && m_core_id >= 0 && m_type_id == 0) { // m_core_id >= 0 means its L1 cache, m_type_id == 0 for data cache
       // This part evicts the prefetch cache block
       // Find the most recent prefetch request that filled this cache block
-      std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      std::map<new_addr_type, std::vector<prefetch_block_info>>&prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      // new_addr_type prefetch_addr = mf->get_uncoalesced_addr();
+      // new_addr_type mshr_addr = m_config.mshr_addr(prefetch_addr);
+      // unsigned most_recent_fill_time = 0;
+      // assert(prefetch_request_tracker.count(mshr_addr));
+      // if (prefetch_request_tracker.count(mshr_addr)) {
+      //   for (auto &prefetch_info : prefetch_request_tracker[mshr_addr]) {
+      //     if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
+      //       assert(prefetch_info.fill_index == idx);
+      //       assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
+      //       prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+      //     }
+      //   }
+      // }
+
+      // std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
       unsigned most_recent_fill_time = 0;
-      for (auto &prefetch_info : prefetch_request_tracker) {
-        if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
-          assert(prefetch_info.fill_index == idx);
-          assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
-          prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+      for (auto &addr_vec : prefetch_request_tracker) {
+        for (auto &prefetch_info : addr_vec.second) {
+          if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
+            assert(prefetch_info.fill_index == idx);
+            assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
+            prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+          }
         }
       }
     }
@@ -419,13 +436,30 @@ void tag_array::fill(new_addr_type addr, unsigned time,
     if (m_lines[idx]->get_sector_fill_source(mask) == PREFETCH  && m_core_id >= 0 && m_type_id == 0) {
       // This part evicts the prefetch cache block
       // Find the most recent prefetch request that filled this cache block
-      std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      std::map<new_addr_type, std::vector<prefetch_block_info>>&prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      // new_addr_type prefetch_addr = mf->get_uncoalesced_addr();
+      // new_addr_type mshr_addr = m_config.mshr_addr(prefetch_addr);
+      // unsigned most_recent_fill_time = 0;
+      // assert(prefetch_request_tracker.count(mshr_addr));
+      // if (prefetch_request_tracker.count(mshr_addr)) {
+      //   for (auto &prefetch_info : prefetch_request_tracker[mshr_addr]) {
+      //     if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
+      //       assert(prefetch_info.fill_index == idx);
+      //       assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
+      //       prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+      //     }
+      //   }
+      // }
+
+      // std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
       unsigned most_recent_fill_time = 0;
-      for (auto &prefetch_info : prefetch_request_tracker) {
-        if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
-          assert(prefetch_info.fill_index == idx);
-          assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
-          prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+      for (auto &addr_vec : prefetch_request_tracker) {
+        for (auto &prefetch_info : addr_vec.second) {
+          if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
+            assert(prefetch_info.fill_index == idx);
+            assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
+            prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+          }
         }
       }
     }
@@ -436,12 +470,22 @@ void tag_array::fill(new_addr_type addr, unsigned time,
   m_lines[idx]->fill(time, mask, mf);
 
   if (mf && mf->isprefetch()) {
-    std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
-    for (auto &prefetch_info : prefetch_request_tracker) {
-      if (prefetch_info.mf_request_uid == mf->get_request_uid()) {
+    std::map<new_addr_type, std::vector<prefetch_block_info>>&prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+    new_addr_type prefetch_addr = mf->get_uncoalesced_addr();
+    new_addr_type mshr_addr = m_config.mshr_addr(prefetch_addr);
+    assert(prefetch_request_tracker.count(mshr_addr));
+    if (prefetch_request_tracker.count(mshr_addr)) {
+      for (auto &prefetch_info : prefetch_request_tracker[mshr_addr]) {
         prefetch_info.fill_index = idx;
       }
     }
+
+    // std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+    // for (auto &prefetch_info : prefetch_request_tracker) {
+    //   if (prefetch_info.mf_request_uid == mf->get_request_uid()) {
+    //     prefetch_info.fill_index = idx;
+    //   }
+    // }
   }
 }
 
@@ -1772,78 +1816,98 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   // Update prefetch metadata after every raytracing mf cache access
   if (mf->israytrace() && !mf->isprefetch()) {
     if (m_tag_array->get_m_lines()[cache_index]->get_line_fill_source() == PREFETCH && m_tag_array->get_m_core_id() >= 0 && m_tag_array->get_m_type_id() == 0) {
-      std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_tag_array->get_m_core_id()]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      std::map<new_addr_type, std::vector<prefetch_block_info>> &prefetch_request_tracker_map = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_tag_array->get_m_core_id()]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      //std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_tag_array->get_m_core_id()]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
       
       if (access_status == HIT) {
-        if (m_tag_array->get_m_lines()[cache_index]->get_sector_fill_source(mf->get_access_sector_mask()) == PREFETCH) {
-          // Find the most recent prefetch entry that fills this cache block
-          unsigned most_recent_fill_time = 0;
-          int max_prefetch_index = -1;
-          for (int i = 0; i < prefetch_request_tracker.size(); i++) {
-            if (m_config.block_addr(prefetch_request_tracker[i].m_prefetch_request_addr) ==  m_tag_array->get_m_lines()[cache_index]->m_block_addr) { // Match cache block address
+        new_addr_type mshr_addr = m_config.mshr_addr(mf->get_uncoalesced_addr());
+        bool found = false;
+        if (prefetch_request_tracker_map.count(m_config.mshr_addr(mshr_addr)))
+          found = true;
+        
+        if (found) {
+          std::vector<prefetch_block_info> &prefetch_request_tracker = prefetch_request_tracker_map[mshr_addr];
+          if (m_tag_array->get_m_lines()[cache_index]->get_sector_fill_source(mf->get_access_sector_mask()) == PREFETCH) {
+            // Find the most recent prefetch entry that fills this cache block
+            unsigned most_recent_fill_time = 0;
+            int max_prefetch_index = -1;
+            for (int i = 0; i < prefetch_request_tracker.size(); i++) {
               if (prefetch_request_tracker[i].prefetch_fill_time > most_recent_fill_time) { // Find most recent fill time
                 most_recent_fill_time = prefetch_request_tracker[i].prefetch_fill_time;
                 max_prefetch_index = i;
               }
             }
+            if (max_prefetch_index != -1) {
+              prefetch_request_tracker[max_prefetch_index].times_accessed++;
+              prefetch_request_tracker[max_prefetch_index].last_accessed_time_by_demand_load = time;
+              if (prefetch_request_tracker[max_prefetch_index].effectiveness == UNCLASSIFIED) {
+                prefetch_request_tracker[max_prefetch_index].effectiveness = TIMELY;
+                prefetch_request_tracker[max_prefetch_index].cycle_classified = time;
+              }
+              if (prefetch_request_tracker[max_prefetch_index].effectiveness == TIMELY)
+                prefetch_request_tracker[max_prefetch_index].times_classified_as_first_classification++;
+              prefetch_request_tracker[max_prefetch_index].total_times_classified++;
+            }
+          }
+        }
+      }
+      else if (access_status == HIT_RESERVED) {
+        new_addr_type mshr_addr = m_config.mshr_addr(mf->get_uncoalesced_addr());
+        bool found = false;
+        if (prefetch_request_tracker_map.count(m_config.mshr_addr(mshr_addr)))
+          found = true;
+        
+        if (found) {
+          std::vector<prefetch_block_info> &prefetch_request_tracker = prefetch_request_tracker_map[mshr_addr];
+          // Find prefetch request with largest issue time but no fill time
+          unsigned most_recent_issue_time = 0;
+          int max_prefetch_index = -1;
+          for (int i = 0; i < prefetch_request_tracker.size(); i++) {
+            if (prefetch_request_tracker[i].prefetch_fill_time == 0) { // Match MSHR address
+              if (prefetch_request_tracker[i].prefetch_issue_time > most_recent_issue_time) { // Find most recent issue time
+                most_recent_issue_time = prefetch_request_tracker[i].prefetch_issue_time;
+                max_prefetch_index = i;
+              }
+            }
           }
           if (max_prefetch_index != -1) {
-            prefetch_request_tracker[max_prefetch_index].times_accessed++;
-            prefetch_request_tracker[max_prefetch_index].last_accessed_time_by_demand_load = time;
             if (prefetch_request_tracker[max_prefetch_index].effectiveness == UNCLASSIFIED) {
-              prefetch_request_tracker[max_prefetch_index].effectiveness = TIMELY;
+              prefetch_request_tracker[max_prefetch_index].effectiveness = LATE;
               prefetch_request_tracker[max_prefetch_index].cycle_classified = time;
             }
-            if (prefetch_request_tracker[max_prefetch_index].effectiveness == TIMELY)
+            if (prefetch_request_tracker[max_prefetch_index].effectiveness == LATE)
               prefetch_request_tracker[max_prefetch_index].times_classified_as_first_classification++;
             prefetch_request_tracker[max_prefetch_index].total_times_classified++;
           }
         }
       }
-      else if (access_status == HIT_RESERVED) {
-        // Find prefetch request with largest issue time but no fill time
-        unsigned most_recent_issue_time = 0;
-        int max_prefetch_index = -1;
-        for (int i = 0; i < prefetch_request_tracker.size(); i++) {
-          if (m_mshrs.get_m_data().count(block_addr) == prefetch_request_tracker[i].m_block_addr && prefetch_request_tracker[i].prefetch_fill_time == 0) { // Match MSHR address
-            if (prefetch_request_tracker[i].prefetch_issue_time > most_recent_issue_time) { // Find most recent issue time
-              most_recent_issue_time = prefetch_request_tracker[i].prefetch_issue_time;
-              max_prefetch_index = i;
-            }
-          }
-        }
-        if (max_prefetch_index != -1) {
-          if (prefetch_request_tracker[max_prefetch_index].effectiveness == UNCLASSIFIED) {
-            prefetch_request_tracker[max_prefetch_index].effectiveness = LATE;
-            prefetch_request_tracker[max_prefetch_index].cycle_classified = time;
-          }
-          if (prefetch_request_tracker[max_prefetch_index].effectiveness == LATE)
-            prefetch_request_tracker[max_prefetch_index].times_classified_as_first_classification++;
-          prefetch_request_tracker[max_prefetch_index].total_times_classified++;
-        }
-      }
       else if (access_status == MISS || access_status == SECTOR_MISS) {
-        // Find most recent evicted prefetch
-        unsigned most_recent_evict_time = 0;
-        int max_prefetch_index = -1;
-        for (int i = 0; i < prefetch_request_tracker.size(); i++) {
-          if (block_addr == m_config.block_addr(prefetch_request_tracker[i].m_prefetch_request_addr)) { // Match address
+        new_addr_type mshr_addr = m_config.mshr_addr(mf->get_uncoalesced_addr());
+        bool found = false;
+        if (prefetch_request_tracker_map.count(m_config.mshr_addr(mshr_addr)))
+          found = true;
+        
+        if (found) {
+          std::vector<prefetch_block_info> &prefetch_request_tracker = prefetch_request_tracker_map[mshr_addr];
+          // Find most recent evicted prefetch
+          unsigned most_recent_evict_time = 0;
+          int max_prefetch_index = -1;
+          for (int i = 0; i < prefetch_request_tracker.size(); i++) {
             if (prefetch_request_tracker[i].evict_time > most_recent_evict_time) { // Find most recent evict time
               most_recent_evict_time = prefetch_request_tracker[i].evict_time;
               max_prefetch_index = i;
             }
           }
-        }
-        if (max_prefetch_index != -1) {
-          if (prefetch_request_tracker[max_prefetch_index].effectiveness == UNCLASSIFIED) {
-            prefetch_request_tracker[max_prefetch_index].effectiveness = TOO_EARLY;
-            prefetch_request_tracker[max_prefetch_index].cycle_classified = time;
+          if (max_prefetch_index != -1) {
+            if (prefetch_request_tracker[max_prefetch_index].effectiveness == UNCLASSIFIED) {
+              prefetch_request_tracker[max_prefetch_index].effectiveness = TOO_EARLY;
+              prefetch_request_tracker[max_prefetch_index].cycle_classified = time;
+            }
+            if (prefetch_request_tracker[max_prefetch_index].effectiveness == TOO_EARLY)
+              prefetch_request_tracker[max_prefetch_index].times_classified_as_first_classification++;
+            prefetch_request_tracker[max_prefetch_index].total_times_classified++;
           }
-          if (prefetch_request_tracker[max_prefetch_index].effectiveness == TOO_EARLY)
-            prefetch_request_tracker[max_prefetch_index].times_classified_as_first_classification++;
-          prefetch_request_tracker[max_prefetch_index].total_times_classified++;
         }
-        
       }
       // else // reservation fail
     }
