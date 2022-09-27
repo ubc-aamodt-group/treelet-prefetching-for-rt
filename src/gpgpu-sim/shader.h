@@ -1316,6 +1316,8 @@ class rt_unit : public pipelined_simd_unit {
         // Prefetching stats
         //std::vector<prefetch_block_info> prefetch_request_tracker;
         std::map<new_addr_type, std::vector<prefetch_block_info>> prefetch_request_tracker; // mshr_addr, list of prefetches belonging to that addr
+
+        unsigned get_total_cycles_without_dispatching() { return total_cycles_without_dispatching; }
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);

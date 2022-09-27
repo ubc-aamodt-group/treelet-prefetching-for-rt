@@ -1346,6 +1346,13 @@ void gpgpu_sim::gpu_print_stat() {
   std::string kernel_info_str = executed_kernel_info_string();
   fprintf(statfout, "%s", kernel_info_str.c_str());
 
+  unsigned avg_queue_delay = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    avg_queue_delay += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_cycles_without_dispatching();
+  }
+  avg_queue_delay /= m_config.num_cluster();
+  gpu_sim_cycle -= avg_queue_delay;
+
   fprintf(statfout, "gpu_sim_cycle = %lld\n", gpu_sim_cycle);
   fprintf(statfout, "gpu_sim_insn = %lld\n", gpu_sim_insn);
   fprintf(statfout, "gpu_ipc = %12.4f\n", (float)gpu_sim_insn / gpu_sim_cycle);
