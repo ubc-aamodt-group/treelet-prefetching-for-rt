@@ -739,6 +739,9 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
                          &(gpgpu_ctx->device_runtime->g_max_sim_rt_kernels),
                          "Max simulated kernels, used to limit how many frames we render. Default: 0",
                          "0");
+  option_parser_register(opp, "-max_treelet_size", OPT_INT32,
+                         &max_treelet_size,
+                         "GPU device runtime synchronize depth", "49152"); //48 KB
 }
 
 /////////////////////////////////////////////////////////////////////////////

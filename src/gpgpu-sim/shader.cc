@@ -3272,7 +3272,8 @@ void rt_unit::cycle() {
     // }
   }
 
-  WARP_QUEUE_DPRINTF("SM %d Processing %d warps, Cycle: %d\n", m_sid, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+  if (prev_n_warps != n_warps && m_config->m_treelet_queue)
+    WARP_QUEUE_DPRINTF("SM %d Processing %d warps, Cycle: %d\n", m_sid, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
 
   // Choose next warp
   warp_inst_t rt_inst;
@@ -3905,23 +3906,6 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
       m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
       events
     );
-
-    // Case where prefetch hits in cache due to demand load or previous prefetch, classify as TOO_LATE
-    if (mf->isprefetch() && status == HIT) {
-      bool found = false;
-      new_addr_type mshr_addr = L1D->get_cache_config().mshr_addr(mf->get_uncoalesced_addr());
-      for (auto &prefetch_info : prefetch_request_tracker[mshr_addr]) {
-        if (prefetch_info.mf_request_uid == mf->get_request_uid()) {
-          if (prefetch_info.effectiveness != UNCLASSIFIED) {
-            prefetch_info.cycle_classified = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
-            prefetch_info.effectiveness = TOO_LATE;
-          }
-          found = true;
-          break;
-        }
-      }
-      assert(found);
-    }
   }
   
   new_addr_type addr = mf->get_addr();

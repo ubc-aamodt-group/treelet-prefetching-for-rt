@@ -971,7 +971,7 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
     treelet_child_map = treelet_root_child_map;
     treelet_addr_only_child_map = treelet_root_addr_only_child_map;
     std::cout << "Total BVH Size: " << total_bvh_size << " bytes" << std::endl;
-    std::cout << "Treelet Size: " << maxBytesPerTreelet << std::endl;
+    std::cout << "Treelet Size: " << maxBytesPerTreelet << " bytes" << std::endl;
     std::cout << "Treelet Count: " << treelet_roots_addr_only.size() << std::endl;
 
     buildNodeToRootMap();
@@ -1038,7 +1038,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     // Form Treelets
     if (!treeletsFormed)
     {
-        createTreelets(_topLevelAS, device_offset, 48*1024); // 48*1024 aila2010 paper
+        createTreelets(_topLevelAS, device_offset, GPGPU_Context()->the_gpgpusim->g_the_gpu->get_config().max_treelet_size); // 48*1024 aila2010 paper
         treeletsFormed = true;
     }
 
