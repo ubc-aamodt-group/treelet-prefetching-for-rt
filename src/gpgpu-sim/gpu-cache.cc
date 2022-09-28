@@ -1913,6 +1913,25 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     }
   }
 
+  // Case where prefetch hits in cache (due to demand load or previous prefetch), classify as TOO_LATE
+  if (mf->isprefetch() && access_status == HIT) {
+    std::map<new_addr_type, std::vector<prefetch_block_info>> &prefetch_request_tracker_map = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+    bool found = false;
+    new_addr_type mshr_addr = m_config.mshr_addr(mf->get_uncoalesced_addr());
+    for (auto &prefetch_info : prefetch_request_tracker_map[mshr_addr]) {
+      if (prefetch_info.mf_request_uid == mf->get_request_uid()) {
+        if (prefetch_info.effectiveness != UNCLASSIFIED) {
+          prefetch_info.cycle_classified = time;
+          prefetch_info.effectiveness = TOO_LATE;
+        }
+        found = true;
+        break;
+      }
+    }
+    assert(found);
+  }
+
+  // Don't think im using this at all
   if (mf->isprefetch()) {
     if (access_status == MISS || access_status == SECTOR_MISS)
       mf->set_prefetch_access_status(MISS_AND_LOAD_FROM_MEM);
