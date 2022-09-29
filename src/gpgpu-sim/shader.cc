@@ -3181,7 +3181,7 @@ void rt_unit::cycle() {
     // Sort accesses in the warps
     if (!sorted) {
       cycles_without_dispatching = 0;
-      WARP_QUEUE_DPRINTF("SM %d Sorting RT Accesses across %d, Cycle: %d\n", m_sid, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+      WARP_QUEUE_DPRINTF("SM %d Sorting RT Accesses across %d warps, Cycle: %d\n", m_sid, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
 
       // Tally up all the different memory accesses from all warps
       std::map<uint8_t*, int> node_access_counts_per_treelet;
@@ -3205,9 +3205,29 @@ void rt_unit::cycle() {
         for (int i = 0; i < 32; i++)
         {
           //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
-          std::deque<RTMemoryTransactionRecord> mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
-          sort_mem_accesses(mem_accesses, node_access_counts_per_treelet);
-          warp_inst.second.get_thread_info(i).RT_mem_accesses = mem_accesses; // rewrite later by passing it directly into the function
+          std::deque<RTMemoryTransactionRecord> original_mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+          std::deque<RTMemoryTransactionRecord> sorted_mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+          
+          WARP_QUEUE_DPRINTF("Inst %d thread %d before: ", warp_inst.first, i);
+          for (auto mem : original_mem_accesses) {
+            WARP_QUEUE_DPRINTF("0x%x, ", mem.address);
+          }
+
+          sort_mem_accesses(sorted_mem_accesses, node_access_counts_per_treelet);
+
+          WARP_QUEUE_DPRINTF("\nInst %d thread %d  after: ", warp_inst.first, i);
+          for (auto mem : sorted_mem_accesses) {
+            WARP_QUEUE_DPRINTF("0x%x, ", mem.address);
+          }
+
+          if (original_mem_accesses == sorted_mem_accesses) {
+            WARP_QUEUE_DPRINTF("same\n");
+          }
+          else {
+            WARP_QUEUE_DPRINTF("different\n");
+          }
+
+          warp_inst.second.get_thread_info(i).RT_mem_accesses = sorted_mem_accesses; // rewrite later by passing it directly into the function
         }
       }
 

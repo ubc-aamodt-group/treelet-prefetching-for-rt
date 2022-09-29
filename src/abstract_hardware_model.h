@@ -1308,6 +1308,11 @@ typedef struct RTMemoryTransactionRecord {
       }
       status = RT_MEM_UNMARKED;
     }
+
+    bool operator==(const RTMemoryTransactionRecord &o) const
+    {
+        return address == o.address && size == o.size && type == o.type;
+    }
 } RTMemoryTransactionRecord;
 
 class warp_inst_t : public inst_t {
