@@ -1821,6 +1821,8 @@ class shader_core_config : public core_config {
   unsigned m_treelet_scheduler;
   bool m_treelet_queue;
   unsigned m_treelet_queue_wait_cycle;
+  unsigned m_max_prefetch_queue_size;
+  bool m_treelet_sort;
 };
 
 struct shader_core_stats_pod {

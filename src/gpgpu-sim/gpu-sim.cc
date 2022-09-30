@@ -306,6 +306,14 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "prefetch treelets in process_memory_access_queue by populating the access q with treelet mfs",
       "0");
   option_parser_register(
+      opp, "-max_prefetch_queue_size", OPT_UINT32, &m_max_prefetch_queue_size,
+      "max_prefetch_queue_size",
+      "500");
+  option_parser_register(
+      opp, "-treelet_sort", OPT_BOOL, &m_treelet_sort,
+      "sort threads in treelet order",
+      "0");
+  option_parser_register(
       opp, "-treelet_scheduler", OPT_UINT32, &m_treelet_scheduler,
       "overrides the default rt unit scheduler with a treelet scheduler",
       "0");
