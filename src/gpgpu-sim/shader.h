@@ -1318,6 +1318,10 @@ class rt_unit : public pipelined_simd_unit {
         std::map<new_addr_type, std::vector<prefetch_block_info>> prefetch_request_tracker; // mshr_addr, list of prefetches belonging to that addr
 
         unsigned get_total_cycles_without_dispatching() { return total_cycles_without_dispatching; }
+        unsigned get_trace_ray_hits() { return trace_ray_hits; }
+        unsigned get_trace_ray_misses() { return trace_ray_misses; }
+        unsigned get_trace_ray_pending_hits() { return trace_ray_pending_hits; }
+
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -1373,6 +1377,11 @@ class rt_unit : public pipelined_simd_unit {
 
       unsigned cacheline_count;
 
+      // Trace ray cache access stats
+      unsigned trace_ray_hits = 0;
+      unsigned trace_ray_misses = 0;
+      unsigned trace_ray_pending_hits = 0;
+
       // Treelets
       unsigned total_cycles_without_dispatching = 0;
       unsigned cycles_without_dispatching = 0;
@@ -1388,7 +1397,7 @@ class rt_unit : public pipelined_simd_unit {
       uint8_t* last_prefetched_treelet = NULL;
       bool prefetch_opportunity = false;
       std::deque<std::pair<new_addr_type, new_addr_type>> prefetch_mem_access_q; // chunk addr, base addr
-      std::deque<unsigned> prefetch_generation_cycles; // used to record prefetch req generation cycles so it can be added to the mem_fetch later
+      std::deque<std::pair<unsigned, new_addr_type>> prefetch_generation_cycles; // used to record prefetch req generation cycles so it can be added to the mem_fetch later, chunk addr
       bool prefetch_access = false;
 };
 

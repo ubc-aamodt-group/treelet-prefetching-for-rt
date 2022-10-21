@@ -2897,79 +2897,111 @@ void rt_unit::sort_mem_accesses(std::deque<RTMemoryTransactionRecord> &mem_acces
   }
 
   // Decide what the treelet order should be
+  // Naive Method
   std::deque<uint8_t*> treelet_traversal_order;
-  while (treelet_traversal_order.size() != treelet_traversals.size()) {
-    int max_nodes_in_treelet_traversal = 0;
-    uint8_t* max_treelet_traversal = NULL;
-    
-
-    for (auto treelet_traversal1 : treelet_traversals) {
-      if (find(treelet_traversal_order.begin(), treelet_traversal_order.end(), treelet_traversal1.first) != treelet_traversal_order.end()) { // if T1 is already in the order list, then move on to next node
-        continue;
-      }
-      bool valid_node = true;
-
-      for (auto treelet_traversal2 : treelet_traversals) {
-        if (treelet_traversal1 == treelet_traversal2) { // dont bother comparing against this node if its the same node
-          continue;
-        }
-        auto itr = find(treelet_traversal_order.begin(), treelet_traversal_order.end(), treelet_traversal2.first); // Checks if T2 is already in treelet_traversal_order or not
-
-        bool isChild = false; // Checks if T1 is T2's child
-        std::vector<StackEntry> treelet2_children = VulkanRayTracing::treeletIDToChildren(treelet_traversal2.first);
-        for (auto child : treelet2_children) {
-          if ((uint8_t*)treelet_traversal1.first == child.addr) {
-            isChild = true;
-            break;
-          }
-        }
-        
-        if (itr != treelet_traversal_order.end() && isChild || !isChild) { // switch up the if condition later to get rid of empty block
-          // do nothing, reverse the statement later
-        }
-        else {
-          valid_node = false;
-          break;
-        }
-      }
-
-      // treelet root 1 is not in any other treelet root's children list
-
-      // Compare T1 against the last node in the order deque
-      if (valid_node) {
-        treelet_traversal_order.push_back(treelet_traversal1.first);
-        // // Work on this better ordering later
-        // if (treelet_traversal_order.empty()) {
-        //   treelet_traversal_order.push_back(treelet_traversal1.first);
-        // }
-        // else {
-        //   if (node_access_counts_per_treelet[treelet_traversal1.first] > node_access_counts_per_treelet[treelet_traversal_order.back()]) {
-        //     // Check that the new node is not a child of the 
-        //     // Insert T1 before the last element
-        //     uint8_t* temp = treelet_traversal_order.back();
-        //     treelet_traversal_order.pop_back();
-        //     treelet_traversal_order.push_back(treelet_traversal1.first);
-        //     treelet_traversal_order.push_back(temp);
-        //   }
-        //   else {
-        //     treelet_traversal_order.push_back(treelet_traversal1.first); // Insert T1 to the back of the ordering
-        //   }
-        // }
-      }
+  for (auto item : root_tags) {
+    if (find(treelet_traversal_order.begin(), treelet_traversal_order.end(), item.second) == treelet_traversal_order.end()) { // If cant find then push
+      treelet_traversal_order.push_back(item.second);
     }
   }
 
-  // Create the sorted RTMemoryTransactionRecord deque
   std::deque<RTMemoryTransactionRecord> sorted_mem_accesses;
   for (auto treelet : treelet_traversal_order) {
-    for (auto mem_access : mem_accesses) {
-      if (treelet == VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address)) {
-        sorted_mem_accesses.push_back(mem_access);
+    for (auto address : treelet_traversals[treelet]) {
+      // Find the corresponding RTMemoryTransactionRecord in mem_accesses
+      RTMemoryTransactionRecord temp;
+      bool found = false;
+      for (auto access : mem_accesses) {
+        if (address == access.address) {
+          found = true;
+          temp = access;
+          break;
+        }
       }
+      if (found) {
+        sorted_mem_accesses.push_back(temp);
+      }
+      else
+        assert(false); // should always find something
     }
   }
   assert(mem_accesses.size() == sorted_mem_accesses.size());
   mem_accesses = sorted_mem_accesses;
+
+  // old broken code (pre Oct 20)
+  // std::deque<uint8_t*> treelet_traversal_order;
+  // while (treelet_traversal_order.size() != treelet_traversals.size()) {
+  //   int max_nodes_in_treelet_traversal = 0;
+  //   uint8_t* max_treelet_traversal = NULL;
+    
+
+  //   for (auto treelet_traversal1 : treelet_traversals) {
+  //     if (find(treelet_traversal_order.begin(), treelet_traversal_order.end(), treelet_traversal1.first) != treelet_traversal_order.end()) { // if T1 is already in the order list, then move on to next node
+  //       continue;
+  //     }
+  //     bool valid_node = true;
+
+  //     for (auto treelet_traversal2 : treelet_traversals) {
+  //       if (treelet_traversal1 == treelet_traversal2) { // dont bother comparing against this node if its the same node
+  //         continue;
+  //       }
+  //       auto itr = find(treelet_traversal_order.begin(), treelet_traversal_order.end(), treelet_traversal2.first); // Checks if T2 is already in treelet_traversal_order or not
+
+  //       bool isChild = false; // Checks if T1 is T2's child
+  //       std::vector<StackEntry> treelet2_children = VulkanRayTracing::treeletIDToChildren(treelet_traversal2.first);
+  //       for (auto child : treelet2_children) {
+  //         if ((uint8_t*)treelet_traversal1.first == child.addr) {
+  //           isChild = true;
+  //           break;
+  //         }
+  //       }
+        
+  //       if (itr != treelet_traversal_order.end() && isChild || !isChild) { // switch up the if condition later to get rid of empty block
+  //         // do nothing, reverse the statement later
+  //       }
+  //       else {
+  //         valid_node = false;
+  //         break;
+  //       }
+  //     }
+
+  //     // treelet root 1 is not in any other treelet root's children list
+
+  //     // Compare T1 against the last node in the order deque
+  //     if (valid_node) {
+  //       treelet_traversal_order.push_back(treelet_traversal1.first);
+  //       // // Work on this better ordering later
+  //       // if (treelet_traversal_order.empty()) {
+  //       //   treelet_traversal_order.push_back(treelet_traversal1.first);
+  //       // }
+  //       // else {
+  //       //   if (node_access_counts_per_treelet[treelet_traversal1.first] > node_access_counts_per_treelet[treelet_traversal_order.back()]) {
+  //       //     // Check that the new node is not a child of the 
+  //       //     // Insert T1 before the last element
+  //       //     uint8_t* temp = treelet_traversal_order.back();
+  //       //     treelet_traversal_order.pop_back();
+  //       //     treelet_traversal_order.push_back(treelet_traversal1.first);
+  //       //     treelet_traversal_order.push_back(temp);
+  //       //   }
+  //       //   else {
+  //       //     treelet_traversal_order.push_back(treelet_traversal1.first); // Insert T1 to the back of the ordering
+  //       //   }
+  //       // }
+  //     }
+  //   }
+  // }
+
+  // // Create the sorted RTMemoryTransactionRecord deque
+  // std::deque<RTMemoryTransactionRecord> sorted_mem_accesses;
+  // for (auto treelet : treelet_traversal_order) {
+  //   for (auto mem_access : mem_accesses) {
+  //     if (treelet == VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address)) {
+  //       sorted_mem_accesses.push_back(mem_access);
+  //     }
+  //   }
+  // }
+  // assert(mem_accesses.size() == sorted_mem_accesses.size());
+  // mem_accesses = sorted_mem_accesses;
 }
 
 void rt_unit::cycle() {
@@ -3202,7 +3234,7 @@ void rt_unit::cycle() {
 
       // Sort each thread's bag of memory accesses
       if (m_config->m_treelet_sort) {
-        for (auto warp_inst : m_current_warps)
+        for (auto &warp_inst : m_current_warps)
         {
           for (int i = 0; i < 32; i++)
           {
@@ -3216,20 +3248,21 @@ void rt_unit::cycle() {
             }
 
             sort_mem_accesses(sorted_mem_accesses, node_access_counts_per_treelet); // TODO: need to consider node_access_counts_per_treelet
+            warp_inst.second.get_thread_info(i).RT_mem_accesses = sorted_mem_accesses; // rewrite later by passing it directly into the function
 
             WARP_QUEUE_DPRINTF("\nInst %d thread %d  after: ", warp_inst.first, i);
-            for (auto mem : sorted_mem_accesses) {
+            for (auto mem : warp_inst.second.get_thread_info(i).RT_mem_accesses) {
               WARP_QUEUE_DPRINTF("0x%x, ", mem.address);
             }
 
-            if (original_mem_accesses == sorted_mem_accesses) {
+            if (original_mem_accesses == warp_inst.second.get_thread_info(i).RT_mem_accesses) {
               WARP_QUEUE_DPRINTF("same\n");
             }
             else {
               WARP_QUEUE_DPRINTF("different\n");
             }
 
-            warp_inst.second.get_thread_info(i).RT_mem_accesses = sorted_mem_accesses; // rewrite later by passing it directly into the function
+            
           }
         }
       }
@@ -3269,7 +3302,7 @@ void rt_unit::cycle() {
             // Create the memory chunks and push to mem_access_q
             for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
               prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
-              prefetch_generation_cycles.push_back(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
+              prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
               TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
             }
             TOMMY_DPRINTF("\n");
@@ -3669,7 +3702,7 @@ mem_fetch* rt_unit::process_prefetch_queue(warp_inst_t &inst) {
 
   new_addr_type next_addr = prefetch_mem_access_q.front().first;
   new_addr_type base_addr = prefetch_mem_access_q.front().second;
-  unsigned prefetch_generation_cycle = prefetch_generation_cycles.front();
+  unsigned prefetch_generation_cycle = prefetch_generation_cycles.front().first;
   //new_addr_type base_addr = mem_access_q_base_addr;
   prefetch_mem_access_q.pop_front();
   prefetch_generation_cycles.pop_front();
@@ -3763,6 +3796,19 @@ mem_fetch* rt_unit::process_memory_chunks(warp_inst_t &inst) {
   ); 
   mf->set_raytrace();
   m_stats->gpgpu_n_rt_mem[mem_access_q_type]++;
+
+  // Remove duplicate entries from prefetch queue
+  if (m_config->m_treelet_prefetch) {
+    for (int idx = 0; idx < prefetch_mem_access_q.size(); idx++) {
+      if (next_addr == prefetch_mem_access_q[idx].first) {
+        assert(prefetch_mem_access_q[idx].first == prefetch_generation_cycles[idx].second);
+        prefetch_mem_access_q.erase(prefetch_mem_access_q.begin() + idx);
+        prefetch_generation_cycles.erase(prefetch_generation_cycles.begin() + idx);
+        TOMMY_DPRINTF("Shader %d: Removing address 0x%x from prefetch queue due to demand load\n", m_sid, next_addr);
+      }
+    }
+  }
+
   return mf;
 }
 
@@ -3823,6 +3869,17 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
   mf->set_raytrace();
   m_stats->gpgpu_n_rt_mem[mem_access_q_type]++;
 
+  // Remove duplicate entries from prefetch queue
+  if (m_config->m_treelet_prefetch) {
+    for (int idx = 0; idx < prefetch_mem_access_q.size(); idx++) {
+      if (next_addr == prefetch_mem_access_q[idx].first) {
+        assert(prefetch_mem_access_q[idx].first == prefetch_generation_cycles[idx].second);
+        prefetch_mem_access_q.erase(prefetch_mem_access_q.begin() + idx);
+        prefetch_generation_cycles.erase(prefetch_generation_cycles.begin() + idx);
+        TOMMY_DPRINTF("Shader %d: Removing address 0x%x from prefetch queue due to demand load\n", m_sid, next_addr);
+      }
+    }
+  }
 
   // Treelet Prefetching
   // if (m_config->m_treelet_prefetch && nodes_in_treelet.size() + prefetch_mem_access_q.size() <= 1000) {
@@ -3924,6 +3981,16 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
       events
     );
   }
+
+  // Classify cache requests of trace ray instruction
+  if (!mf->isprefetch() && mf->israytrace()) {
+    if (status == HIT)
+      trace_ray_hits++;
+    else if (status == MISS)
+      trace_ray_misses++;
+    else if (status == HIT_RESERVED)
+      trace_ray_pending_hits++;
+  }
   
   new_addr_type addr = mf->get_addr();
   new_addr_type base_addr = mf->get_uncoalesced_base_addr();
@@ -3951,7 +4018,7 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
         RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
         if (prefetch_access) {
           prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
-          prefetch_generation_cycles.push_front(mf->get_prefetch_generation_cycle());
+          prefetch_generation_cycles.push_front(std::make_pair(mf->get_prefetch_generation_cycle(), mf->get_uncoalesced_addr()));
           prefetch_request_tracker[cache->get_cache_config().mshr_addr(mf->get_uncoalesced_addr())].pop_back();
         }
         else {
@@ -3970,7 +4037,7 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
       RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
       if (prefetch_access) {
         prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
-        prefetch_generation_cycles.push_front(mf->get_prefetch_generation_cycle());
+        prefetch_generation_cycles.push_front(std::make_pair(mf->get_prefetch_generation_cycle(), mf->get_uncoalesced_addr()));
         prefetch_request_tracker[cache->get_cache_config().mshr_addr(mf->get_uncoalesced_addr())].pop_back();
       }
       else {

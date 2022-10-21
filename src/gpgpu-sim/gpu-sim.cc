@@ -1354,15 +1354,46 @@ void gpgpu_sim::clear_executed_kernel_info() {
 void gpgpu_sim::gpu_print_stat() {
   FILE *statfout = stdout;
 
+  unsigned avg_queue_delay = 0;
+  fprintf(statfout, "queue_delay: ");
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    unsigned queue_delay = m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_cycles_without_dispatching();
+    fprintf(statfout, "%d ", queue_delay);
+    avg_queue_delay += queue_delay;
+  }
+  fprintf(statfout, "\n");
+  avg_queue_delay /= m_config.num_cluster();
+  //gpu_sim_cycle -= avg_queue_delay;
+  fprintf(statfout, "avg_queue_delay = %d\n\n", avg_queue_delay);
+
+  // trace_ray_cache_stats
+  fprintf(statfout, "trace_ray_cache_stats:\n");
+  fprintf(statfout, "HITS: ");
+  unsigned trace_ray_total_hits = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_trace_ray_hits());
+    trace_ray_total_hits += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_trace_ray_hits();
+  }
+  fprintf(statfout, "%d\n", trace_ray_total_hits);
+
+  fprintf(statfout, "MISSES: ");
+  unsigned trace_ray_total_misses = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_trace_ray_misses());
+    trace_ray_total_misses += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_trace_ray_misses();
+  }
+  fprintf(statfout, "%d\n", trace_ray_total_misses);
+
+  fprintf(statfout, "PENDING_HITS: ");
+  unsigned trace_ray_total_pending_hits = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_trace_ray_pending_hits());
+    trace_ray_total_pending_hits += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_trace_ray_pending_hits();
+  }
+  fprintf(statfout, "%d\n\n", trace_ray_total_pending_hits);
+
   std::string kernel_info_str = executed_kernel_info_string();
   fprintf(statfout, "%s", kernel_info_str.c_str());
-
-  unsigned avg_queue_delay = 0;
-  for (int i = 0; i < m_config.num_cluster(); i++) {
-    avg_queue_delay += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_cycles_without_dispatching();
-  }
-  avg_queue_delay /= m_config.num_cluster();
-  gpu_sim_cycle -= avg_queue_delay;
 
   fprintf(statfout, "gpu_sim_cycle = %lld\n", gpu_sim_cycle);
   fprintf(statfout, "gpu_sim_insn = %lld\n", gpu_sim_insn);
