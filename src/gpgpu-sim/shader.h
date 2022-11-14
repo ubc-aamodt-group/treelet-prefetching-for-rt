@@ -1321,6 +1321,8 @@ class rt_unit : public pipelined_simd_unit {
         unsigned get_trace_ray_hits() { return trace_ray_hits; }
         unsigned get_trace_ray_misses() { return trace_ray_misses; }
         unsigned get_trace_ray_pending_hits() { return trace_ray_pending_hits; }
+        unsigned get_unused_prefetch_opportunity() { return unused_prefetch_opportunity; }
+        unsigned get_prefetches_issued() { return prefetches_issued; }
 
         
     protected:
@@ -1385,8 +1387,15 @@ class rt_unit : public pipelined_simd_unit {
       // Treelets
       unsigned total_cycles_without_dispatching = 0;
       unsigned cycles_without_dispatching = 0;
+      unsigned cycles_without_dispatching_in_current_batch = 0;
       bool sort_msg_printed = false;
       unsigned int prev_n_warps = 0;
+
+      // Pipelined warp queuing
+      std::map<unsigned, warp_inst_t> m_queued_warps; // {warp id, warp instruction}
+      unsigned n_queued_warps;
+      bool executing = false;
+      unsigned int prev_n_queued_warps = 0;
 
       // Queueing up warps
       bool sorted = false;
@@ -1395,10 +1404,13 @@ class rt_unit : public pipelined_simd_unit {
 
       // Prefetching
       uint8_t* last_prefetched_treelet = NULL;
+      uint8_t* last_rejected_treelet = NULL;
       bool prefetch_opportunity = false;
       std::deque<std::pair<new_addr_type, new_addr_type>> prefetch_mem_access_q; // chunk addr, base addr
       std::deque<std::pair<unsigned, new_addr_type>> prefetch_generation_cycles; // used to record prefetch req generation cycles so it can be added to the mem_fetch later, chunk addr
       bool prefetch_access = false;
+      unsigned unused_prefetch_opportunity = 0;
+      unsigned prefetches_issued = 0;
 };
 
 class ldst_unit : public pipelined_simd_unit {
@@ -1827,7 +1839,11 @@ class shader_core_config : public core_config {
   bool bypassL0Complet;
   unsigned m_rt_intersection_table_type;
   bool m_treelet_prefetch;
+  unsigned m_treelet_prefetch_heuristic;
+  double m_treelet_prefetch_threshold;
+  bool m_flush_prefetch_queue_on_new_treelet;
   unsigned m_treelet_scheduler;
+  bool m_pipelined_treelet_queue;
   bool m_treelet_queue;
   unsigned m_treelet_queue_wait_cycle;
   unsigned m_max_prefetch_queue_size;

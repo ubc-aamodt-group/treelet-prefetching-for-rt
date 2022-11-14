@@ -294,6 +294,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "type of intersection table",
       "0");
   option_parser_register(
+      opp, "-pipelined_treelet_queue", OPT_BOOL, &m_pipelined_treelet_queue,
+      "queue up RT unit warps in pipelined fashion until a certain amount",
+      "0");
+  option_parser_register(
       opp, "-treelet_queue", OPT_BOOL, &m_treelet_queue,
       "queue up RT unit warps until a certain amount",
       "0");
@@ -304,6 +308,18 @@ void shader_core_config::reg_options(class OptionParser *opp) {
   option_parser_register(
       opp, "-treelet_prefetch", OPT_BOOL, &m_treelet_prefetch,
       "prefetch treelets in process_memory_access_queue by populating the access q with treelet mfs",
+      "0");
+  option_parser_register(
+      opp, "-treelet_prefetch_heuristic", OPT_UINT32, &m_treelet_prefetch_heuristic,
+      "treelet_prefetch_heuristic",
+      "0");
+  option_parser_register(
+      opp, "-treelet_prefetch_threshold", OPT_DOUBLE, &m_treelet_prefetch_threshold,
+      "treelet_prefetch_threshold for treelet_prefetch_heuristic 1",
+      "0.5");
+  option_parser_register(
+      opp, "-flush_prefetch_queue_on_new_treelet", OPT_BOOL, &m_flush_prefetch_queue_on_new_treelet,
+      "flush prefetch queue when theres a new most popular treelet",
       "0");
   option_parser_register(
       opp, "-max_prefetch_queue_size", OPT_UINT32, &m_max_prefetch_queue_size,
@@ -1530,6 +1546,24 @@ void gpgpu_sim::gpu_print_stat() {
     }
     fprintf(statfout, "%d\n", total_prefetch_effectiveness[i]);
   }
+  fprintf(statfout, "\n");
+
+  fprintf(statfout, "Wasted Prefetch Opportunities: [Clusters 0, ..., N, Total Sum]\n");
+  unsigned total_unused_prefetch_opportunity = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_unused_prefetch_opportunity());
+    total_unused_prefetch_opportunity += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_unused_prefetch_opportunity();
+  }
+  fprintf(statfout, "%d\n", total_unused_prefetch_opportunity);
+
+  fprintf(statfout, "Prefetches Issued: [Clusters 0, ..., N, Total Sum]\n");
+  unsigned total_prefetches_issued = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetches_issued());
+    total_prefetches_issued += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetches_issued();
+  }
+  fprintf(statfout, "%d\n", total_prefetches_issued);
+
   fprintf(statfout, "\n");
 
 
