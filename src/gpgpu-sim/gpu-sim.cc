@@ -294,6 +294,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "type of intersection table",
       "0");
   option_parser_register(
+      opp, "-keep_accepting_warps", OPT_BOOL, &m_keep_accepting_warps,
+      "keep accepting new warps, no queue",
+      "0");
+  option_parser_register(
       opp, "-pipelined_treelet_queue", OPT_BOOL, &m_pipelined_treelet_queue,
       "queue up RT unit warps in pipelined fashion until a certain amount",
       "0");
@@ -326,8 +330,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "max_prefetch_queue_size",
       "500");
   option_parser_register(
-      opp, "-treelet_sort", OPT_BOOL, &m_treelet_sort,
+      opp, "-treelet_sort", OPT_UINT32, &m_treelet_sort,
       "sort threads in treelet order",
+      "0");
+  option_parser_register(
+      opp, "-sort_method", OPT_UINT32, &m_sort_method,
+      "sort method, 0 is strictly following treelet order, 1 is loosely following treelet order",
       "0");
   option_parser_register(
       opp, "-treelet_scheduler", OPT_UINT32, &m_treelet_scheduler,

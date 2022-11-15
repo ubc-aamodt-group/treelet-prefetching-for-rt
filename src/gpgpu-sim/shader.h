@@ -1307,7 +1307,7 @@ class rt_unit : public pipelined_simd_unit {
         unsigned active_warps();
 
         // For Treelets
-        void sort_mem_accesses(std::deque<RTMemoryTransactionRecord> &mem_accesses, std::map<uint8_t*, int> node_access_counts_per_treelet);
+        void sort_mem_accesses(std::deque<RTMemoryTransactionRecord> &mem_accesses, std::map<uint8_t*, int> node_access_counts_per_treelet = {});
 
         // Prefetching
         void send_prefetch_request(warp_inst_t &inst);
@@ -1401,6 +1401,8 @@ class rt_unit : public pipelined_simd_unit {
       bool sorted = false;
       bool ready_to_process_warp_buffer = false;
       bool accept_new_warps = true;
+
+      std::map<unsigned, bool> sorted_warp_insts; // <warp inst id, sorted or unosrted>, tracks if a warp inst is sorted or not
 
       // Prefetching
       uint8_t* last_prefetched_treelet = NULL;
@@ -1843,11 +1845,13 @@ class shader_core_config : public core_config {
   double m_treelet_prefetch_threshold;
   bool m_flush_prefetch_queue_on_new_treelet;
   unsigned m_treelet_scheduler;
+  bool m_keep_accepting_warps;
   bool m_pipelined_treelet_queue;
   bool m_treelet_queue;
   unsigned m_treelet_queue_wait_cycle;
   unsigned m_max_prefetch_queue_size;
   bool m_treelet_sort;
+  unsigned m_sort_method;
 };
 
 struct shader_core_stats_pod {
