@@ -369,21 +369,21 @@ address_type line_size_based_tag_func(new_addr_type address, new_addr_type line_
       fflush(stdout); \
    }
 
-#define TOMMY_DEBUG_PRINT 1
+#define TOMMY_DEBUG_PRINT 0
 #define TOMMY_DPRINTF(...) \
    if(TOMMY_DEBUG_PRINT) { \
       printf(__VA_ARGS__); \
       fflush(stdout); \
    }
 
-#define WARP_QUEUE_DEBUG_PRINT 1
+#define WARP_QUEUE_DEBUG_PRINT 0
 #define WARP_QUEUE_DPRINTF(...) \
    if(WARP_QUEUE_DEBUG_PRINT) { \
       printf(__VA_ARGS__); \
       fflush(stdout); \
    }
 
-#define THREAD_SORT_DEBUG_PRINT 1
+#define THREAD_SORT_DEBUG_PRINT 0
 #define THREAD_SORT_DPRINTF(...) \
    if(THREAD_SORT_DEBUG_PRINT) { \
       printf(__VA_ARGS__); \

@@ -3362,7 +3362,7 @@ void rt_unit::cycle() {
       else if (m_config->m_treelet_prefetch_heuristic == 3) { // Prefetch Heuristic 3: Prefetch the latter half of the tree? Since the first half will be handled by demand loads
         int max = -1;
         unsigned total_threads = 0;
-        double percentage = 0.5; // prefetch the latter half
+        double percentage = 0.0; // prefetch the latter half
         for (auto treelet_addr : treelet_prefetch_priority) {
           if (treelet_addr.second > max) {
             prefetched_treelet_root = treelet_addr.first;
@@ -3370,6 +3370,9 @@ void rt_unit::cycle() {
           }
           total_threads += treelet_addr.second;
         }
+
+        percentage = static_cast<double>(treelet_prefetch_priority[prefetched_treelet_root]) / static_cast<double>(total_threads);
+
         // The main difference is in the next stage where I add prefetches
         int num_nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[prefetched_treelet_root].size();
         num_nodes_to_prefetch = static_cast<int>((static_cast<double>(num_nodes_in_treelet) * percentage) + 0.5); // + 0.5 is for rounding
