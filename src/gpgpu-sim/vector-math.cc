@@ -1,5 +1,4 @@
-#ifndef VECTOR_MATH_INCLUDED
-#define VECTOR_MATH_INCLUDED
+#include "vector-math.h"
 
 float3 make_float3(float a, float b, float c)
 {
@@ -26,6 +25,16 @@ float3 operator+(float3 a, float3 b)
 float3 operator*(float3 a, float3 b)
 {
     return make_float3(a.x * b.x, a.y * b.y, a.z * b.z);
+}
+
+float3 operator*(float3 a, float s)
+{
+    return make_float3(a.x * s, a.y * s, a.z * s);
+}
+
+float3 operator*(float s, float3 a)
+{
+    return make_float3(a.x * s, a.y * s, a.z * s);
 }
 
 // Cross Product
@@ -71,6 +80,3 @@ float3 max(float3 a, float3 b)
     return make_float3(std::max(a.x, b.x), std::max(a.y, b.y), std::max(a.z, b.z));
 }
 
-const float PI = 3.14159265358979323846;
-
-#endif

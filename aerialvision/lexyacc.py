@@ -64,6 +64,12 @@ import variableclasses as vc
 
 global skipCFLOGParsing
 skipCFLOGParsing = 0
+global trace_ray_instruction
+trace_ray_instruction = {}
+global txl_instruction
+txl_instruction = {}
+global num_shader
+num_shader = 0
 
 userSettingPath = os.path.join(os.environ['HOME'], '.gpgpu_sim', 'aerialvision')
 
@@ -143,22 +149,38 @@ def parseMe(filename):
 
     # Creating holder for CFLOG
     CFLOG = {}
+
+    trace_ray = []
     
     # Declaring the properties of supported stats in a single dictionary
     # FORMAT: <stat name in GUI>:vc.variable(<Stat Name in Log>, <type>, <reset@kernelstart>, [datatype]) 
     variables = {
+        'rt_mem_requests':vc.variable('', 1, 1, 'scalar'), 
+        'rt_mshr_size_total':vc.variable('', 1, 1, 'scalar'), 
+        'aware_st_size' :vc.variable('', 2, 0, "impVec"),
+        'aware_rt_size' :vc.variable('', 2, 0, "impVec"),
+        'L1DMiss' :vc.variable('', 2, 0, "impVec"),
+        'L1DAccess' :vc.variable('', 2, 0, "impVec"),
+        'L1DResFail' :vc.variable('', 2, 0, "impVec"),
+        'L1DHitRes' :vc.variable('', 2, 0, "impVec"),
+        'rt_nwarps' :vc.variable('', 2, 0, "impVec"),
+        'rt_nthreads' :vc.variable('', 2, 0, "impVec"),
+        'rt_naccesses' :vc.variable('', 2, 0, "impVec"),
+        'rt_max_coalesce' :vc.variable('', 2, 0, "impVec"),
+        'rt_mshr_size' :vc.variable('', 2, 0, "impVec"),
+        'rt_nthreads_intersection' :vc.variable('', 2, 0, "impVec"),
         'shaderInsn':vc.variable('shaderinsncount', 2, 0, 'impVec'), 
         'globalInsn':vc.variable('globalinsncount', 1, 1, 'scalar'), 
         'globalCycle':vc.variable('globalcyclecount', 1, 1, 'scalar'), 
         'shaderWarpDiv':vc.variable('shaderwarpdiv', 2, 0, 'impVec'), 
-        'L1TextMiss' :vc.variable('lonetexturemiss', 1, 0, 'scalar'), 
-        'L1ConstMiss':vc.variable('loneconstmiss',   1, 0, 'scalar'),
-        'L1ReadMiss' :vc.variable('lonereadmiss',    1, 0, 'scalar'),
-        'L1WriteMiss':vc.variable('lonewritemiss',   1, 0, 'scalar'), 
-        'L2ReadMiss' :vc.variable('ltworeadmiss',    1, 0, 'scalar'),
-        'L2WriteMiss':vc.variable('ltwowritemiss',   1, 0, 'scalar'),
-        'L2WriteHit' :vc.variable('ltwowritehit',    1, 0, 'scalar'),
-        'L2ReadHit'  :vc.variable('ltworeadhit',     1, 0, 'scalar'),
+        'L1TextMiss' :vc.variable('', 1, 0, 'scalar'), 
+        'L1ConstMiss':vc.variable('',   1, 0, 'scalar'),
+        'L1ReadMiss' :vc.variable('',    1, 0, 'scalar'),
+        'L1WriteMiss':vc.variable('',   1, 0, 'scalar'), 
+        'Ltworeadmiss' :vc.variable('ltworeadmiss',    1, 0, 'scalar'),
+        'Ltwowritemiss':vc.variable('ltwowritemiss',   1, 0, 'scalar'),
+        'Ltwowritehit' :vc.variable('ltwowritehit',    1, 0, 'scalar'),
+        'Ltworeadhit'  :vc.variable('ltworeadhit',     1, 0, 'scalar'),
         'globalTotInsn':vc.variable('globaltotinsncount', 1,0, 'scalar'), 
         'dramCMD' :vc.variable('', 2, 0, 'idxVec'),
         'dramNOP' :vc.variable('', 2, 0, 'idxVec'),
@@ -175,6 +197,7 @@ def parseMe(filename):
         'averagemflatency' :vc.variable('', 1, 0, 'custom'), 
         'LDmemlatdist':vc.variable('', 3, 0, 'stackbar'), 
         'STmemlatdist':vc.variable('', 3, 0, 'stackbar'), 
+        'RTWarpDist':vc.variable('', 3, 0, 'stackbar'), 
         'WarpDivergenceBreakdown':vc.variable('', 3, 0, 'stackbar'), 
         'WarpIssueSlotBreakdown':vc.variable('', 3, 0, 'stackbar'), 
         'WarpIssueDynamicIdBreakdown':vc.variable('', 3, 0, 'stackbar'), 
@@ -187,14 +210,15 @@ def parseMe(filename):
         'dramlocal_acc_w'  :vc.variable('', 4, 0, 'idx2DVec'), 
         'dramconst_acc_r'  :vc.variable('', 4, 0, 'idx2DVec'), 
         'dramtexture_acc_r':vc.variable('', 4, 0, 'idx2DVec'), 
-        'cacheMissRate_globalL1_all'    :vc.variable('cachemissrate_globallocall1_all',    2, 0, 'impVec', float),
-        'cacheMissRate_textureL1_all'   :vc.variable('cachemissrate_texturel1_all',        2, 0, 'impVec', float),
-        'cacheMissRate_constL1_all'     :vc.variable('cachemissrate_constl1_all',          2, 0, 'impVec', float),
-        'cacheMissRate_globalL1_noMgHt' :vc.variable('cachemissrate_globallocall1_nomght', 2, 0, 'impVec', float),
-        'cacheMissRate_textureL1_noMgHt':vc.variable('cachemissrate_texturel1_nomght',     2, 0, 'impVec', float),
-        'cacheMissRate_constL1_noMgHt'  :vc.variable('cachemissrate_constl1_nomght',       2, 0, 'impVec', float),
+        'cacheMissRate_globalL1_all'    :vc.variable('', 2, 0, 'impVec', float),
+        'cacheMissRate_textureL1_all'   :vc.variable('', 2, 0, 'impVec', float),
+        'cacheMissRate_constL1_all'     :vc.variable('', 2, 0, 'impVec', float),
+        'cacheMissRate_globalL1_noMgHt' :vc.variable('', 2, 0, 'impVec', float),
+        'cacheMissRate_textureL1_noMgHt':vc.variable('', 2, 0, 'impVec', float),
+        'cacheMissRate_constL1_noMgHt'  :vc.variable('', 2, 0, 'impVec', float),
         'shdrctacount': vc.variable('shdrctacount', 2, 0, 'impVec'),
-        'CFLOG' : CFLOG 
+        'CFLOG' : CFLOG,
+        'trace_ray' : trace_ray
     }
 
     # import user defined stat variables from variables.txt - adds on top of the defaults
@@ -205,6 +229,8 @@ def parseMe(filename):
     for name, var in variables.iteritems():
         if (name == 'CFLOG'):
             continue;
+        elif (name == 'trace_ray'):
+            continue
         if (var.lookup_tag != ''):
             stat_lookuptable[var.lookup_tag] = var 
         else:
@@ -287,6 +313,24 @@ def parseMe(filename):
             MaxPC = max(pc)
             CFLOG[p[1]].maxPC = max(MaxPC, CFLOG[p[1]].maxPC)
         
+        elif "trace_ray" in lookup_input:
+            global trace_ray_instruction
+            global num_shader
+            if p[2].split(" ")[0] not in trace_ray_instruction:
+                num_shader += 1
+            if len(p[2].split(" ")) > 1:
+                lines = [int(l) for l in p[2].split(" ")[1:]]
+                shader = p[2].split(" ")[0]
+                trace_ray_instruction[shader] = lines
+                print("trace_ray for shader {s} are at lines {l}".format(s=shader, l=lines))
+        elif "txl_inst" in lookup_input:
+            global txl_instruction
+            global num_shader
+            if len(p[2].split(" ")) > 1:
+                lines = [int(l) for l in p[2].split(" ")[1:]]
+                shader = p[2].split(" ")[0]
+                txl_instruction[shader] = lines
+                print("txl for shader {s} are at lines {l}".format(s=shader, l=lines))
         else:
             pass
         

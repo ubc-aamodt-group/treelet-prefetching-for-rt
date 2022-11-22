@@ -57,8 +57,8 @@ enum cache_request_status {
 enum cache_reservation_fail_reason {
   LINE_ALLOC_FAIL = 0,  // all line are reserved
   MISS_QUEUE_FULL,      // MISS queue (i.e. interconnect or DRAM) is full
-  MSHR_ENRTY_FAIL,
-  MSHR_MERGE_ENRTY_FAIL,
+  MSHR_ENTRY_FAIL,
+  MSHR_MERGE_ENTRY_FAIL,
   MSHR_RW_PENDING,
   NUM_CACHE_RESERVATION_FAIL_STATUS
 };
@@ -649,6 +649,10 @@ class cache_config {
       */
       m_is_streaming = true;
       m_alloc_policy = ON_FILL;
+      m_mshr_entries = m_nset * m_assoc * MAX_DEFAULT_CACHE_SIZE_MULTIBLIER;
+      if (m_cache_type == SECTOR) m_mshr_entries *= SECTOR_CHUNCK_SIZE;
+      m_mshr_max_merge = MAX_WARP_PER_SM;
+      printf("Streaming cache with %d mshr\n", m_mshr_entries);
     }
     switch (mshr_type) {
       case 'F':
@@ -1030,10 +1034,14 @@ class mshr_table {
   bool access_ready() const { return !m_current_response.empty(); }
   /// Returns next ready access
   mem_fetch *next_access();
+  // Checks if next access it for ray tracing
+  bool next_access_rt();
   void display(FILE *fp) const;
   // Returns true if there is a pending read after write
   bool is_read_after_write_pending(new_addr_type block_addr);
-
+  std::list<mem_fetch *> get_mf_list(new_addr_type block_addr);
+  unsigned num_entries() const { return m_data.size(); }
+  
   void check_mshr_parameters(unsigned num_entries, unsigned max_merged) {
     assert(m_num_entries == num_entries &&
            "Change of MSHR parameters between kernels is not allowed");
@@ -1217,6 +1225,9 @@ class cache_stats {
 
   void sample_cache_port_utility(bool data_port_busy, bool fill_port_busy);
 
+  unsigned g_rt_cold_miss = 0;
+  unsigned g_rt_miss = 0;
+  unsigned g_nonrt_miss = 0;
  private:
   bool check_valid(int type, int status) const;
   bool check_fail_valid(int type, int fail) const;
@@ -1294,11 +1305,27 @@ class baseline_cache : public cache_t {
   bool access_ready() const { return m_mshrs.access_ready(); }
   /// Pop next ready access (does not include accesses that "HIT")
   mem_fetch *next_access() { return m_mshrs.next_access(); }
+  /// Checks if next ready access is for the RT unit
+  bool next_access_rt() { return m_mshrs.next_access_rt(); }
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
   void invalidate() { m_tag_array->invalidate(); }
   void print(FILE *fp, unsigned &accesses, unsigned &misses) const;
+  void get_stats(unsigned &total_access, unsigned &total_misses,
+                          unsigned &total_hit_res,
+                          unsigned &total_res_fail) const;
   void display_state(FILE *fp) const;
+  
+  std::list<mem_fetch*> probe_mshr(new_addr_type block_addr) { 
+    if (m_mshrs.probe(block_addr))
+      return m_mshrs.get_mf_list(block_addr);
+    else 
+      return {};
+  }
+  
+  unsigned num_mshr_entries() {
+    return m_mshrs.num_entries();
+  }
 
   // Stat collection
   const cache_stats &get_stats() const { return m_stats; }
@@ -1530,6 +1557,8 @@ class data_cache : public baseline_cache {
     }
   }
 
+  std::set<new_addr_type> m_addr_set;
+
   virtual enum cache_request_status access(new_addr_type addr, mem_fetch *mf,
                                            unsigned time,
                                            std::list<cache_event> &events);
@@ -1733,7 +1762,7 @@ class tex_cache : public cache_t {
                                    std::list<cache_event> &events);
   void cycle();
   /// Place returning cache block into reorder buffer
-  void fill(mem_fetch *mf, unsigned time);
+  void fill(mem_fetch *mf, unsigned time, bool perfect_mem);
   /// Are any (accepted) accesses that had to wait for memory now ready? (does
   /// not include accesses that "HIT")
   bool access_ready() const { return !m_result_fifo.empty(); }

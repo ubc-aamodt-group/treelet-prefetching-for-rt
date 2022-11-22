@@ -52,6 +52,12 @@ class gpgpu_context {
   cuda_sim *func_sim;
   cuda_device_runtime *device_runtime;
   ptx_stats *stats;
+
+  // std::set<unsigned> allocate_perthread;
+  // std::set<unsigned> allocate_memaccess;
+  unsigned perthread_uid = 0;
+  // unsigned memaccess_uid = 0;
+
   // member function list
   void synchronize();
   void exit_simulation();
@@ -78,6 +84,7 @@ class gpgpu_context {
   const ptx_instruction *pc_to_instruction(unsigned pc);
   const warp_inst_t *ptx_fetch_inst(address_type pc);
   unsigned translate_pc_to_ptxlineno(unsigned pc);
+  unsigned translate_pc_to_ptxlineno(unsigned pc, unsigned &shader);
 };
 gpgpu_context *GPGPU_Context();
 CUctx_st *GPGPUSim_Context(gpgpu_context *ctx);

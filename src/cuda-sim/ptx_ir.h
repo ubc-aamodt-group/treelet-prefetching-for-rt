@@ -1008,6 +1008,8 @@ struct basic_block_t {
     is_exit = ex;
     immediatepostdominator_id = -1;
     immediatedominator_id = -1;
+    has_delayed_reconvergence = false;
+    delayed_postdominator_pc = (unsigned)-1;
   }
 
   ptx_instruction *ptx_begin;
@@ -1020,6 +1022,11 @@ struct basic_block_t {
   std::set<int> Tmp_ids;
   int immediatepostdominator_id;
   int immediatedominator_id;
+
+  bool has_delayed_reconvergence;
+  address_type delayed_postdominator_pc;
+  int delayed_postdominator_id;
+
   bool is_entry;
   bool is_exit;
   unsigned bb_id;
@@ -1043,11 +1050,6 @@ struct gpgpu_recon_t {
   class ptx_instruction *target_inst;
 };
 
-struct function_coalescing_entry {
-  uint32_t GeometryIndex;
-  bool thread_mask[16];
-};
-
 class ptx_instruction : public warp_inst_t {
  public:
   ptx_instruction(int opcode, const symbol *pred, int neg_pred, int pred_mod,
@@ -1057,7 +1059,7 @@ class ptx_instruction : public warp_inst_t {
                   const std::list<int> &scalar_type, memory_space_t space_spec,
                   const char *file, unsigned line, const char *source,
                   const core_config *config, gpgpu_context *ctx);
-
+                  
   void print_insn() const;
   virtual void print_insn(FILE *fp) const;
   std::string to_string() const;
@@ -1072,6 +1074,7 @@ class ptx_instruction : public warp_inst_t {
     }
   }
   const char *source_file() const { return m_source_file.c_str(); }
+  std::string source_file_str() const { return m_source_file; }
   unsigned source_line() const { return m_source_line; }
   unsigned get_num_operands() const { return m_operands.size(); }
   bool has_pred() const { return m_pred != NULL; }
@@ -1210,7 +1213,7 @@ class ptx_instruction : public warp_inst_t {
 
   bool has_memory_read() const {
     if (m_opcode == LD_OP || m_opcode == LDU_OP || m_opcode == TEX_OP ||
-        m_opcode == MMA_LD_OP)
+        m_opcode == MMA_LD_OP || m_opcode == TXL_OP || m_opcode == IMG_DEREF_LD_OP)
       return true;
     // Check PTXPlus operand type below
     // Source operands are memory operands
@@ -1222,7 +1225,7 @@ class ptx_instruction : public warp_inst_t {
     return false;
   }
   bool has_memory_write() const {
-    if (m_opcode == ST_OP || m_opcode == MMA_ST_OP) return true;
+    if (m_opcode == ST_OP || m_opcode == MMA_ST_OP || m_opcode == IMG_DEREF_ST_OP) return true;
     // Check PTXPlus operand type below
     // Destination operand is a memory operand
     ptx_instruction::const_iterator op = op_iter_begin();
@@ -1232,22 +1235,6 @@ class ptx_instruction : public warp_inst_t {
         return true;
     }
     return false;
-  }
-
-  void add_function_coalescing(uint32_t geometry_id, uint32_t tid) {
-    assert(tid < 16);
-    for (int i = 0; i < function_coalescing_buffer.size(); i++) {
-      if (function_coalescing_buffer[i].GeometryIndex == geometry_id)
-      {
-        if (!function_coalescing_buffer[i].thread_mask[tid])
-          function_coalescing_buffer[i].thread_mask[tid] = true;
-          return;
-      }
-    }
-    struct function_coalescing_entry entry;
-    entry.GeometryIndex = geometry_id;
-    entry.thread_mask[tid] = true;
-    function_coalescing_buffer.push_back(entry);
   }
 
  private:
@@ -1304,11 +1291,10 @@ class ptx_instruction : public warp_inst_t {
   unsigned m_inst_size;   // bytes
 
   virtual void pre_decode();
+  void set_input_output_registers();
   friend class function_info;
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
-
-  std::vector<struct function_coalescing_entry> function_coalescing_buffer;
 };
 
 class param_info {
@@ -1420,6 +1406,9 @@ class function_info {
   void find_postdominators();
   void print_postdominators();
 
+  void update_postdominators();
+  void update_postdominators(unsigned BBID, unsigned ReqBB, address_type rpc);
+
   // iterate across m_basic_blocks of function,
   // finding immediate postdominator blocks, using algorithm of
   // Muchnick's Adv. Compiler Design & Implemmntation Fig 7.15
@@ -1506,6 +1495,42 @@ class function_info {
   std::pair<size_t, unsigned> get_param_config(unsigned param_num) const {
     return m_param_configs[param_num];
   }
+  
+int compare_strings(char a[], char b[]) {
+  int c = 0;
+
+  while (a[c] == b[c]) {
+    if (a[c] == '\0' || b[c] == '\0')
+      break;
+    c++;
+  }
+
+  if (a[c] == '\0' && b[c] == '\0')
+    return 0;
+  else
+    return -1;
+}
+
+char* readfile(const std::string filename) {
+  assert (filename != "");
+  FILE* fp = fopen(filename.c_str(),"r");
+  if (!fp) {
+    printf("ERROR: Could not open file %s for reading\n", filename);
+    assert (0);
+  }
+  // finding size of the file
+  int filesize = 0;
+  fseek(fp, 0, SEEK_END);
+
+  filesize = ftell(fp);
+  fseek(fp, 0, SEEK_SET);
+  // allocate and copy the entire ptx
+  char* ret = (char*)malloc((filesize + 1) * sizeof(char));
+  fread(ret, 1, filesize, fp);
+  ret[filesize] = '\0';
+  fclose(fp);
+  return ret;
+}
 
   void set_maxnt_id(unsigned maxthreads) { maxnt_id = maxthreads; }
   unsigned get_maxnt_id() { return maxnt_id; }

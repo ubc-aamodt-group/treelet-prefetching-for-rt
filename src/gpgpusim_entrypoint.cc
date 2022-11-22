@@ -127,6 +127,9 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
         ctx->the_gpgpusim->g_the_gpu->cycle();
         sim_cycles = true;
         ctx->the_gpgpusim->g_the_gpu->deadlock_check();
+        if (ctx->the_gpgpusim->g_the_gpu->print_intermittent_stats(ctx->the_gpgpusim->g_the_gpu->gpu_sim_cycle)) {
+          ctx->the_gpgpusim->g_the_gpu->print_stats();
+        }
       } else {
         if (ctx->the_gpgpusim->g_the_gpu->cycle_insn_cta_max_hit()) {
           ctx->the_gpgpusim->g_stream_manager->stop_all_running_kernels();
@@ -147,7 +150,9 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
       ctx->the_gpgpusim->g_the_gpu->print_stats();
       ctx->the_gpgpusim->g_the_gpu->update_stats();
       ctx->print_simulation_time();
+      ctx->the_gpgpusim->g_the_gpu->visualizer_print_traceray();
     }
+    ctx->the_gpgpusim->g_stream_manager->register_finished_kernel();
     pthread_mutex_lock(&(ctx->the_gpgpusim->g_sim_lock));
     ctx->the_gpgpusim->g_sim_active = false;
     pthread_mutex_unlock(&(ctx->the_gpgpusim->g_sim_lock));

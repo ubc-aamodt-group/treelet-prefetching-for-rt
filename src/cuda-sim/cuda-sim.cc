@@ -354,6 +354,9 @@ void function_info::ptx_assemble() {
       modified = connect_break_targets(); 
    } while (modified == true);
 
+    // TODO-LUCY: Add AWARE code from this section
+    print_basic_blocks();
+
    if ( g_debug_execution>=50 ) {
       print_basic_blocks();
       print_basic_block_links();
@@ -579,7 +582,15 @@ void ptx_instruction::set_fp_or_int_archop() {
       (m_opcode == GET_ELEMENT_32_OP) || (m_opcode == SET_ELEMENT_32_OP) ||
       (m_opcode == LOAD_RAY_WORLD_TO_OBJECT_OP) || (m_opcode == LOAD_RAY_OBJECT_TO_WORLD_OP) ||
       (m_opcode == LOAD_RAY_WORLD_DIRECTION_OP) || (m_opcode == LOAD_PRIMITIVE_ID_OP) ||
-      (m_opcode == LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) || (m_opcode == END_TRACE_RAY_OP)) {
+      (m_opcode == LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) || (m_opcode == END_TRACE_RAY_OP) ||
+      (m_opcode == LOAD_RAY_WORLD_ORIGIN_OP) || (m_opcode == LOAD_RAY_T_MAX_OP) ||
+      (m_opcode == TXL_OP) || (m_opcode == SHADER_CLOCK_OP) || (m_opcode == IMG_DEREF_LD_OP) ||
+      (m_opcode == RUN_INTERSECTION_OP) || (m_opcode == GET_INTERSECTION_INDEX_OP) ||
+      (m_opcode == CALL_INTERSECTION_SHADER_OP) || (m_opcode == INTERSECTION_EXIT_OP) ||
+      (m_opcode == REPORT_RAY_INTERSECTION_OP) || (m_opcode == LOAD_RAY_T_MIN_OP) ||
+      (m_opcode == HIT_GEOMETRY_OP) || (m_opcode == COPYSIGNF_OP) || (m_opcode == GET_HITGROUP_OP) ||
+      (m_opcode == GET_WARP_HITGROUP_OP) || (m_opcode == GET_CLOSEST_HIT_SHADERID_OP) ||
+      (m_opcode == GET_INTERSECTION_SHADERID_OP) || (m_opcode == GET_INTERSECTION_SHADER_DATE_ADDRESS_OP)) {
     // do nothing
   } else if ((m_opcode == CVT_OP || m_opcode == SET_OP ||
               m_opcode == SLCT_OP)) {
@@ -609,116 +620,116 @@ void ptx_instruction::set_mul_div_or_other_archop(){
       (m_opcode != GET_ELEMENT_32_OP) && (m_opcode != SET_ELEMENT_32_OP) &&
       (m_opcode != LOAD_RAY_WORLD_TO_OBJECT_OP) && (m_opcode != LOAD_RAY_OBJECT_TO_WORLD_OP) &&
       (m_opcode != LOAD_RAY_WORLD_DIRECTION_OP) && (m_opcode != LOAD_PRIMITIVE_ID_OP) &&
-      (m_opcode != LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) && (m_opcode != END_TRACE_RAY_OP)){
-    if(get_type() == F64_TYPE || get_type() == FF64_TYPE){
-         switch(get_opcode()){
-            case MUL_OP:
-            case MAD_OP:
-            case FMA_OP:
-                sp_op=DP_MUL_OP;
-               break;
-            case DIV_OP:
-            case REM_OP:
-                sp_op=DP_DIV_OP;
-               break;
-            case RCP_OP:
-                sp_op=DP_DIV_OP;
-               break;
-            case LG2_OP:
-                sp_op=FP_LG_OP;
-               break;
-            case RSQRT_OP:
-            case SQRT_OP:
-                sp_op=FP_SQRT_OP;
-               break;            
-            case SIN_OP:
-            case COS_OP:
-                sp_op=FP_SIN_OP;
-               break;
-            case EX2_OP:
-                sp_op=FP_EXP_OP;
-               break;
-            case MMA_OP:
-                sp_op=TENSOR__OP;
-            break;
-            case TEX_OP:
-                sp_op=TEX__OP;
-            break;
-            default:
-               if((op==DP_OP) || (op==ALU_OP))
-                  sp_op=DP___OP;
-               break;
-         }
+      (m_opcode != LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP) && (m_opcode != END_TRACE_RAY_OP) &&
+      (m_opcode != LOAD_RAY_WORLD_ORIGIN_OP) && (m_opcode != LOAD_RAY_T_MAX_OP) &&
+      (m_opcode != TXL_OP) && (m_opcode != SHADER_CLOCK_OP) && (m_opcode != IMG_DEREF_LD_OP) &&
+      (m_opcode != RUN_INTERSECTION_OP) && (m_opcode != GET_INTERSECTION_INDEX_OP) &&
+      (m_opcode != CALL_INTERSECTION_SHADER_OP) && (m_opcode != INTERSECTION_EXIT_OP) &&
+      (m_opcode != REPORT_RAY_INTERSECTION_OP) && (m_opcode != LOAD_RAY_T_MIN_OP) &&
+      (m_opcode != HIT_GEOMETRY_OP) && (m_opcode != COPYSIGNF_OP) && (m_opcode != GET_HITGROUP_OP) &&
+      (m_opcode != GET_WARP_HITGROUP_OP) && (m_opcode != GET_CLOSEST_HIT_SHADERID_OP) &&
+      (m_opcode != GET_INTERSECTION_SHADERID_OP) && (m_opcode != GET_INTERSECTION_SHADER_DATE_ADDRESS_OP)) {
+    if (get_type() == F32_TYPE || get_type() == F64_TYPE ||
+        get_type() == FF64_TYPE) {
+      switch (get_opcode()) {
+        case MUL_OP:
+        case MAD_OP:
+          sp_op = FP_MUL_OP;
+          break;
+        case DIV_OP:
+          sp_op = FP_DIV_OP;
+          break;
+        case LG2_OP:
+          sp_op = FP_LG_OP;
+          break;
+        case RSQRT_OP:
+        case SQRT_OP:
+          sp_op = FP_SQRT_OP;
+          break;
+        case RCP_OP:
+          sp_op = FP_DIV_OP;
+          break;
+        case SIN_OP:
+        case COS_OP:
+          sp_op = FP_SIN_OP;
+          break;
+        case EX2_OP:
+          sp_op = FP_EXP_OP;
+          break;
+        default:
+          if ((op == ALU_OP) || (op == TENSOR_CORE_OP)) sp_op = FP__OP;
+          break;
       }
-      else if(get_type()==F16_TYPE || get_type()==F32_TYPE){
-         switch(get_opcode()){
-            case MUL_OP:
-            case MAD_OP:
-            case FMA_OP:
-                sp_op=FP_MUL_OP;
-               break;
-            case DIV_OP:
-            case REM_OP:
-                sp_op=FP_DIV_OP;
-               break;
-            case RCP_OP:
-                sp_op=FP_DIV_OP;
-               break;
-            case LG2_OP:
-                sp_op=FP_LG_OP;
-               break;
-            case RSQRT_OP:
-            case SQRT_OP:
-                sp_op=FP_SQRT_OP;
-               break;            
-            case SIN_OP:
-            case COS_OP:
-                sp_op=FP_SIN_OP;
-               break;
-            case EX2_OP:
-                sp_op=FP_EXP_OP;
-               break;
-            case MMA_OP:
-                sp_op=TENSOR__OP;
-            break;
-            case TEX_OP:
-                sp_op=TEX__OP;
-            break;
-            default:
-               if((op==SP_OP) || (op==ALU_OP))
-                  sp_op=FP__OP;
-               break;
-         }
-      }else {
-         switch(get_opcode()){
-            case MUL24_OP:
-            case MAD24_OP:
-                sp_op=INT_MUL24_OP;
-            break;
-            case MUL_OP:
-            case MAD_OP:
-            case FMA_OP:
-               if(get_type()==U32_TYPE || get_type()==S32_TYPE || get_type()==B32_TYPE)
-                   sp_op=INT_MUL32_OP;
-               else
-                   sp_op=INT_MUL_OP;
-            break;
-            case DIV_OP:
-            case REM_OP:
-                sp_op=INT_DIV_OP;
-            break;
-            case MMA_OP:
-                sp_op=TENSOR__OP;
-            break;
-            case TEX_OP:
-                sp_op=TEX__OP;
-            break;
-            default:
-               if((op==INTP_OP) || (op==ALU_OP))
-                   sp_op=INT__OP;
-               break;
-         }
-      }
+    }
+    else if(get_type()==F16_TYPE || get_type()==F32_TYPE){
+        switch(get_opcode()){
+          case MUL_OP:
+          case MAD_OP:
+          case FMA_OP:
+              sp_op=FP_MUL_OP;
+              break;
+          case DIV_OP:
+          case REM_OP:
+              sp_op=FP_DIV_OP;
+              break;
+          case RCP_OP:
+              sp_op=FP_DIV_OP;
+              break;
+          case LG2_OP:
+              sp_op=FP_LG_OP;
+              break;
+          case RSQRT_OP:
+          case SQRT_OP:
+              sp_op=FP_SQRT_OP;
+              break;            
+          case SIN_OP:
+          case COS_OP:
+              sp_op=FP_SIN_OP;
+              break;
+          case EX2_OP:
+              sp_op=FP_EXP_OP;
+              break;
+          case MMA_OP:
+              sp_op=TENSOR__OP;
+          break;
+          case TEX_OP:
+              sp_op=TEX__OP;
+          break;
+          default:
+              if((op==SP_OP) || (op==ALU_OP))
+                sp_op=FP__OP;
+              break;
+        }
+    }else {
+        switch(get_opcode()){
+          case MUL24_OP:
+          case MAD24_OP:
+              sp_op=INT_MUL24_OP;
+          break;
+          case MUL_OP:
+          case MAD_OP:
+          case FMA_OP:
+              if(get_type()==U32_TYPE || get_type()==S32_TYPE || get_type()==B32_TYPE)
+                  sp_op=INT_MUL32_OP;
+              else
+                  sp_op=INT_MUL_OP;
+          break;
+          case DIV_OP:
+          case REM_OP:
+              sp_op=INT_DIV_OP;
+          break;
+          case MMA_OP:
+              sp_op=TENSOR__OP;
+          break;
+          case TEX_OP:
+              sp_op=TEX__OP;
+          break;
+          default:
+              if((op==INTP_OP) || (op==ALU_OP))
+                  sp_op=INT__OP;
+              break;
+        }
+    }
   }
 }
 
@@ -821,6 +832,7 @@ void ptx_instruction::set_opcode_and_latency() {
       if (has_memory_write()) op = STORE_OP;
       break;
     case LD_OP:
+    case IMG_DEREF_LD_OP:
       op = LOAD_OP;
       break;
     case MMA_LD_OP:
@@ -830,6 +842,7 @@ void ptx_instruction::set_opcode_and_latency() {
       op = LOAD_OP;
       break;
     case ST_OP:
+    case IMG_DEREF_ST_OP:
       op = STORE_OP;
       break;
     case MMA_ST_OP:
@@ -842,6 +855,7 @@ void ptx_instruction::set_opcode_and_latency() {
       op = BRANCH_OP;
       break;
     case TEX_OP:
+    case TXL_OP:
       op = LOAD_OP;
       mem_op = TEX;
       break;
@@ -857,8 +871,6 @@ void ptx_instruction::set_opcode_and_latency() {
     case MEMBAR_OP:
       op = MEMORY_BARRIER_OP;
       break;
-    case CALL_MISS_SHADER_OP:
-    case CALL_CLOSEST_HIT_SHADER_OP:
     case CALL_OP: {
       if (m_is_printf || m_is_cdp) {
         op = ALU_OP;
@@ -866,6 +878,14 @@ void ptx_instruction::set_opcode_and_latency() {
         op = CALL_OPS;
       break;
     }
+
+    case CALL_MISS_SHADER_OP:
+    case CALL_CLOSEST_HIT_SHADER_OP:
+    case CALL_INTERSECTION_SHADER_OP:
+    case CALL_ANY_HIT_SHADER_OP:
+      op = CALL_OPS;
+      break;
+
     case CALLP_OP: {
       if (m_is_printf || m_is_cdp) {
         op = ALU_OP;
@@ -1108,21 +1128,27 @@ void ptx_instruction::pre_decode() {
   memory_op = no_memory_op;
   data_size = 0;
   if (has_memory_read() || has_memory_write()) {
-    unsigned to_type = get_type();
-    data_size = datatype2size(to_type);
+    // Data size is set later during execution for ray tracing instructions
+    if (m_opcode != IMG_DEREF_LD_OP && m_opcode != IMG_DEREF_ST_OP && m_opcode != TXL_OP) {
+      unsigned to_type = get_type();
+      data_size = datatype2size(to_type);
+    }
     memory_op = has_memory_read() ? memory_load : memory_store;
   }
 
   bool has_dst = false;
+  unsigned op_classification;
 
   switch (get_opcode()) {
 #define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) \
   case OP:                                         \
     has_dst = (DST != 0);                          \
+    op_classification = CLASSIFICATION;            \
     break;
 #define OP_W_DEF(OP, FUNC, STR, DST, CLASSIFICATION) \
   case OP:                                           \
     has_dst = (DST != 0);                            \
+    op_classification = CLASSIFICATION;            \
     break;
 #include "opcodes.def"
 #undef OP_DEF
@@ -1130,6 +1156,14 @@ void ptx_instruction::pre_decode() {
     default:
       printf("Execution error: Invalid opcode (0x%x)\n", get_opcode());
       break;
+  }
+
+  if (get_opcode() == TRACE_RAY_OP) {
+    unsigned shader_id = 0;
+    printf("trace_ray instruction found at PC %d (line %d,", pc, GPGPU_Context()->translate_pc_to_ptxlineno(pc, shader_id));
+    printf(" shader %d)!\n", shader_id);
+    unsigned line = GPGPU_Context()->translate_pc_to_ptxlineno(pc, shader_id);
+    gpgpu_ctx->func_sim->g_traceray_instructions.push_back(std::pair<unsigned, unsigned>(shader_id, line));
   }
 
   switch (m_cache_option) {
@@ -1159,75 +1193,84 @@ void ptx_instruction::pre_decode() {
       break;
     default:
       // if( m_opcode == LD_OP || m_opcode == LDU_OP )
-      if (m_opcode == MMA_LD_OP || m_opcode == LD_OP || m_opcode == LDU_OP)
+      if (m_opcode == MMA_LD_OP || m_opcode == LD_OP || m_opcode == LDU_OP || m_opcode == IMG_DEREF_LD_OP)
         cache_op = CACHE_ALL;
       // else if( m_opcode == ST_OP )
-      else if (m_opcode == MMA_ST_OP || m_opcode == ST_OP)
+      else if (m_opcode == MMA_ST_OP || m_opcode == ST_OP || m_opcode == IMG_DEREF_ST_OP)
         cache_op = CACHE_WRITE_BACK;
       else if (m_opcode == ATOM_OP)
         cache_op = CACHE_GLOBAL;
+      else if (m_opcode == TRACE_RAY_OP)
+        cache_op = CACHE_ALL;
       break;
   }
 
   set_opcode_and_latency();
   set_bar_type();
-  // Get register operands
-  int n = 0, m = 0;
-  ptx_instruction::const_iterator opr = op_iter_begin();
-  for (; opr != op_iter_end(); opr++, n++) {  // process operands
-    const operand_info &o = *opr;
-    if (has_dst && n == 0) {
-      // Do not set the null register "_" as an architectural register
-      if (o.is_reg() && !o.is_non_arch_reg()) {
-        out[0] = o.reg_num();
-        arch_reg.dst[0] = o.arch_reg_num();
-      } else if (o.is_vector()) {
-        is_vectorin = 1;
-        unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1) out[0] = o.reg1_num();
-        if (num_elem >= 2) out[1] = o.reg2_num();
-        if (num_elem >= 3) out[2] = o.reg3_num();
-        if (num_elem >= 4) out[3] = o.reg4_num();
-        if (num_elem >= 5) out[4] = o.reg5_num();
-        if (num_elem >= 6) out[5] = o.reg6_num();
-        if (num_elem >= 7) out[6] = o.reg7_num();
-        if (num_elem >= 8) out[7] = o.reg8_num();
-        for (int i = 0; i < num_elem; i++) arch_reg.dst[i] = o.arch_reg_num(i);
-      }
-    } else {
-      if (o.is_reg() && !o.is_non_arch_reg()) {
-        int reg_num = o.reg_num();
-        arch_reg.src[m] = o.arch_reg_num();
-        switch (m) {
-          case 0:
-            in[0] = reg_num;
-            break;
-          case 1:
-            in[1] = reg_num;
-            break;
-          case 2:
-            in[2] = reg_num;
-            break;
-          default:
-            break;
+
+  // Use special function for all the ray tracing instructions
+  if (op_classification >= 11) {
+    set_input_output_registers();
+  }
+  else {
+    // Get register operands
+    int n = 0, m = 0;
+    ptx_instruction::const_iterator opr = op_iter_begin();
+    for (; opr != op_iter_end(); opr++, n++) {  // process operands
+      const operand_info &o = *opr;
+      if (has_dst && n == 0) {
+        // Do not set the null register "_" as an architectural register
+        if (o.is_reg() && !o.is_non_arch_reg()) {
+          out[0] = o.reg_num();
+          arch_reg.dst[0] = o.arch_reg_num();
+        } else if (o.is_vector()) {
+          is_vectorin = 1;
+          unsigned num_elem = o.get_vect_nelem();
+          if (num_elem >= 1) out[0] = o.reg1_num();
+          if (num_elem >= 2) out[1] = o.reg2_num();
+          if (num_elem >= 3) out[2] = o.reg3_num();
+          if (num_elem >= 4) out[3] = o.reg4_num();
+          if (num_elem >= 5) out[4] = o.reg5_num();
+          if (num_elem >= 6) out[5] = o.reg6_num();
+          if (num_elem >= 7) out[6] = o.reg7_num();
+          if (num_elem >= 8) out[7] = o.reg8_num();
+          for (int i = 0; i < num_elem; i++) arch_reg.dst[i] = o.arch_reg_num(i);
         }
-        m++;
-      } else if (o.is_vector()) {
-        // assert(m == 0); //only support 1 vector operand (for textures) right
-        // now
-        is_vectorout = 1;
-        unsigned num_elem = o.get_vect_nelem();
-        if (num_elem >= 1) in[m + 0] = o.reg1_num();
-        if (num_elem >= 2) in[m + 1] = o.reg2_num();
-        if (num_elem >= 3) in[m + 2] = o.reg3_num();
-        if (num_elem >= 4) in[m + 3] = o.reg4_num();
-        if (num_elem >= 5) in[m + 4] = o.reg5_num();
-        if (num_elem >= 6) in[m + 5] = o.reg6_num();
-        if (num_elem >= 7) in[m + 6] = o.reg7_num();
-        if (num_elem >= 8) in[m + 7] = o.reg8_num();
-        for (int i = 0; i < num_elem; i++)
-          arch_reg.src[m + i] = o.arch_reg_num(i);
-        m += num_elem;
+      } else {
+        if (o.is_reg() && !o.is_non_arch_reg()) {
+          int reg_num = o.reg_num();
+          arch_reg.src[m] = o.arch_reg_num();
+          switch (m) {
+            case 0:
+              in[0] = reg_num;
+              break;
+            case 1:
+              in[1] = reg_num;
+              break;
+            case 2:
+              in[2] = reg_num;
+              break;
+            default:
+              break;
+          }
+          m++;
+        } else if (o.is_vector()) {
+          // assert(m == 0); //only support 1 vector operand (for textures) right
+          // now
+          is_vectorout = 1;
+          unsigned num_elem = o.get_vect_nelem();
+          if (num_elem >= 1) in[m + 0] = o.reg1_num();
+          if (num_elem >= 2) in[m + 1] = o.reg2_num();
+          if (num_elem >= 3) in[m + 2] = o.reg3_num();
+          if (num_elem >= 4) in[m + 3] = o.reg4_num();
+          if (num_elem >= 5) in[m + 4] = o.reg5_num();
+          if (num_elem >= 6) in[m + 5] = o.reg6_num();
+          if (num_elem >= 7) in[m + 6] = o.reg7_num();
+          if (num_elem >= 8) in[m + 7] = o.reg8_num();
+          for (int i = 0; i < num_elem; i++)
+            arch_reg.src[m + i] = o.arch_reg_num(i);
+          m += num_elem;
+        }
       }
     }
   }
@@ -1249,9 +1292,12 @@ void ptx_instruction::pre_decode() {
   // Get address registers inside memory operands.
   // Assuming only one memory operand per instruction,
   //  and maximum of two address registers for one memory operand.
-  if (has_memory_read() || has_memory_write()) {
+  if (m_opcode == TXL_OP || m_opcode == IMG_DEREF_LD_OP || m_opcode == IMG_DEREF_ST_OP) {
+    // TODO: Figure out memory operands (if any exist)
+  }
+  else if (has_memory_read() || has_memory_write()) {
     ptx_instruction::const_iterator op = op_iter_begin();
-    for (; op != op_iter_end(); op++, n++) {  // process operands
+    for (; op != op_iter_end(); op++) {  // process operands
       const operand_info &o = *op;
 
       if (o.is_memory_operand()) {
@@ -1299,6 +1345,100 @@ void ptx_instruction::pre_decode() {
   reconvergence_pc = gpgpu_ctx->func_sim->get_converge_point(pc);
 
   m_decoded = true;
+}
+
+void ptx_instruction::set_input_output_registers() {
+  unsigned num_operands = get_num_operands();
+  std::list<unsigned> operand_classification;
+  switch(m_opcode) {
+    case TRACE_RAY_OP:
+      operand_classification = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2};
+      break;
+    case LD_RAY_LAUNCH_SIZE_OP:
+      operand_classification = {1, 1, 1};
+      break;
+    case LOAD_RAY_INSTANCE_CUSTOM_INDEX_OP:
+      operand_classification = {2};
+      break;
+    case LOAD_RAY_WORLD_TO_OBJECT_OP:
+    case LOAD_RAY_OBJECT_TO_WORLD_OP:
+      operand_classification = {2, 1};
+      break;
+    case LOAD_RAY_WORLD_DIRECTION_OP:
+    case LOAD_RAY_WORLD_ORIGIN_OP:
+      operand_classification = {2};
+      break;
+    case LOAD_RAY_T_MAX_OP:
+    case LOAD_RAY_T_MIN_OP:
+      operand_classification = {2};
+      break;
+    // case LD_VK_DESC_OP:
+    case RT_ALLOC_MEM_OP:
+    case GET_ELEMENT_32_OP:
+    case SET_ELEMENT_32_OP:
+      operand_classification = {2, 1, 1};
+      break;
+    case WRAP_32_4_OP:
+      operand_classification = {2, 1, 1, 1, 1};
+      break;
+    case UNWRAP_32_4_OP:
+      operand_classification = {2, 2, 2, 2, 1};
+      break;
+    case SHADER_CLOCK_OP:
+      operand_classification = {2, 2};
+      break;
+    case COPYSIGNF_OP:
+      operand_classification = {2, 1};
+      break;
+    case TXL_OP:
+      operand_classification = {1, 1, 2, 2, 2, 2, 1, 1, 1};
+      break;
+    case IMG_DEREF_LD_OP:
+      operand_classification = {1, 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1, 1};
+      break;
+    case IMG_DEREF_ST_OP:
+      // TODO: Operands need to be confirmed
+      operand_classification = {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1};
+      break;
+    case HIT_GEOMETRY_OP:
+      operand_classification = {2, 1};
+      break;
+    case INTERSECTION_EXIT_OP:
+    case RUN_INTERSECTION_OP:
+      operand_classification = {2, 1, 1};
+      break;
+  }
+
+  if (operand_classification.size() > 0) {
+    assert(num_operands == operand_classification.size());
+    unsigned in_index = 0;
+    unsigned out_index = 0;
+    ptx_instruction::const_iterator opr = op_iter_begin();
+    for (; opr != op_iter_end(); opr++) {  // process operands
+      const operand_info &o = *opr;
+      
+      if (!o.is_reg()) continue;
+
+      int reg_num = o.reg_num();
+      if (operand_classification.front() == 1) {
+        arch_reg.src[in_index] = reg_num;
+        in[in_index] = reg_num;
+        in_index++;
+      }
+      else if (operand_classification.front() == 2) {
+        arch_reg.dst[out_index] = reg_num;
+        out[out_index] = reg_num;
+        out_index++;
+      }
+      else {
+        assert(0);
+      }
+      operand_classification.pop_front();
+    }
+  }
+  else {
+    printf("Operand information not set. %s\n", m_source.c_str());
+  }
 }
 
 void function_info::add_param_name_type_size(unsigned index, std::string name,
@@ -1746,7 +1886,7 @@ void cuda_sim::init_inst_classification_stat() {
          MAX_CLASS_KER);  // a static limit on number of kernels increase it if
                           // it fails!
   g_inst_classification_stat[g_ptx_kernel_count] =
-      StatCreate(kernelname, 1, 20);
+      StatCreate(kernelname, 1, 25);
   if (!g_inst_op_classification_stat)
     g_inst_op_classification_stat =
         (void **)calloc(MAX_CLASS_KER, sizeof(void *));
@@ -1814,6 +1954,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
     }
 
     if (pI->has_pred()) {
+      inst.set_pred();
       const operand_info &pred = pI->get_pred();
       ptx_reg_t pred_value = get_operand_value(pred, pred, PRED_TYPE, this, 0);
       if (pI->get_pred_mod() == -1) {
@@ -1892,8 +2033,11 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       fflush(m_gpu->get_ptx_inst_debug_file());
     }
 
-    if (m_gpu->gpgpu_ctx->func_sim->ptx_debug_exec_dump_cond<5>(get_uid(),
-                                                                pc)) {
+    // if (m_gpu->gpgpu_ctx->func_sim->ptx_debug_exec_dump_cond<5>(get_uid(), pc)) {
+    unsigned long long gpgpusim_total_cycles =  m_gpu->gpgpu_ctx->the_gpgpusim->g_the_gpu->gpu_sim_cycle +
+                                                m_gpu->gpgpu_ctx->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+    if (m_gpu->gpgpu_ctx->func_sim->ptx_debug_exec_dump_cond<5>(get_uid(), pc) &&
+        (m_gpu->gpgpu_ctx->func_sim->g_debug_cycle < gpgpusim_total_cycles)) {
       dim3 ctaid = get_ctaid();
       dim3 tid = get_tid();
       printf(
@@ -1911,7 +2055,8 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
     _memory_op_t insn_memory_op = no_memory_op;
     unsigned insn_data_size = 0;
     if ((pI->has_memory_read() || pI->has_memory_write())) {
-      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP ||
+              inst_opcode == TXL_OP || inst_opcode == IMG_DEREF_LD_OP || inst_opcode == IMG_DEREF_ST_OP))) {
         insn_memaddr = last_eaddr();
         insn_space = last_space();
         unsigned to_type = pI->get_type();
@@ -1943,6 +2088,46 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
           this);  // texture obtain its data granularity from the texture info
     }
 
+    else if (pI->get_opcode() == TXL_OP) {
+      TXL_DPRINTF("TXL_OP reached.\n");
+      inst.set_addr(lane_id, last_eaddrs());
+      insn_space.set_type(tex_space);
+      inst.space = insn_space;
+      insn_data_size = last_size();
+      inst.data_size = insn_data_size;
+    }
+
+    else if (pI->get_opcode() == IMG_DEREF_ST_OP) {
+      TXL_DPRINTF("IMG_DEREF_ST_OP reached.\n");
+      inst.set_addr(lane_id, last_eaddr());
+      insn_space.set_type(global_space);
+      inst.space = insn_space;
+      insn_data_size = last_size();
+      inst.data_size = insn_data_size;
+    }
+
+    else if (pI->get_opcode() == IMG_DEREF_LD_OP) {
+      TXL_DPRINTF("IMG_DEREF_LD_OP reached.\n");
+      inst.set_addr(lane_id, last_eaddr());
+      insn_space.set_type(global_space);
+      inst.space = insn_space;
+      insn_data_size = last_size();
+      inst.data_size = insn_data_size;
+    }
+
+    if (pI->get_opcode() == TRACE_RAY_OP) { 
+      // Copy list of accesses to warp instruction
+      inst.set_rt_mem_transactions(lane_id, RT_transactions);
+      inst.set_rt_mem_store_transactions(lane_id, RT_store_transactions);
+      inst.set_rt_ray_properties(lane_id, m_ray);
+      
+      // Set memory space
+      insn_space.set_type(global_space);
+      inst.space = insn_space;
+      insn_data_size = 16;
+      inst.data_size = insn_data_size;
+    }
+    
     // Output register information to file and stdout
     if (config.get_ptx_inst_debug_to_file() != 0 &&
         (config.get_ptx_inst_debug_thread_uid() == 0 ||
@@ -1952,13 +2137,13 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
     }
 
     if (g_debug_execution >= 6) {
-      if (m_gpu->gpgpu_ctx->func_sim->ptx_debug_exec_dump_cond<6>(get_uid(),
-                                                                  pc))
+      if (m_gpu->gpgpu_ctx->func_sim->ptx_debug_exec_dump_cond<6>(get_uid(), pc) &&
+          (m_gpu->gpgpu_ctx->func_sim->g_debug_cycle < gpgpusim_total_cycles))
         dump_modifiedregs(stdout);
     }
     if (g_debug_execution >= 10) {
-      if (m_gpu->gpgpu_ctx->func_sim->ptx_debug_exec_dump_cond<10>(get_uid(),
-                                                                   pc))
+      if (m_gpu->gpgpu_ctx->func_sim->ptx_debug_exec_dump_cond<10>(get_uid(), pc) &&
+          (m_gpu->gpgpu_ctx->func_sim->g_debug_cycle < gpgpusim_total_cycles))
         dump_regs(stdout);
     }
     update_pc();
@@ -1973,26 +2158,26 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       unsigned space_type = 0;
       switch (pI->get_space().get_type()) {
         case global_space:
-          space_type = 10;
+          space_type = 15;
           break;
         case local_space:
-          space_type = 11;
+          space_type = 16;
           break;
         case tex_space:
-          space_type = 12;
+          space_type = 17;
           break;
         case surf_space:
-          space_type = 13;
+          space_type = 18;
           break;
         case param_space_kernel:
         case param_space_local:
-          space_type = 14;
+          space_type = 19;
           break;
         case shared_space:
-          space_type = 15;
+          space_type = 20;
           break;
         case const_space:
-          space_type = 16;
+          space_type = 21;
           break;
         default:
           space_type = 0;
@@ -2001,6 +2186,9 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       StatAddSample(m_gpu->gpgpu_ctx->func_sim->g_inst_classification_stat
                         [m_gpu->gpgpu_ctx->func_sim->g_ptx_kernel_count],
                     op_classification);
+      unsigned shader;
+      m_gpu->gpgpu_ctx->translate_pc_to_ptxlineno(inst.pc, shader);
+      m_gpu->gpgpu_ctx->func_sim->g_inst_class_stat[shader][op_classification]++;
       if (space_type)
         StatAddSample(m_gpu->gpgpu_ctx->func_sim->g_inst_classification_stat
                           [m_gpu->gpgpu_ctx->func_sim->g_ptx_kernel_count],
@@ -2022,7 +2210,8 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
 
     // "Return values"
     if (!skip) {
-      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP || inst_opcode == TRACE_RAY_OP ||
+              inst_opcode == TXL_OP || inst_opcode == IMG_DEREF_LD_OP || inst_opcode == IMG_DEREF_ST_OP))) {
         inst.space = insn_space;
         inst.set_addr(lane_id, insn_memaddr);
         inst.data_size = insn_data_size;  // simpleAtomicIntrinsics
@@ -2390,6 +2579,14 @@ void cuda_sim::read_sim_environment_variables() {
     fflush(stdout);
     sscanf(dbg_thread, "%d", &g_debug_thread_uid);
   }
+
+  char *dbg_cycle = getenv("PTX_SIM_DEBUG_CYCLE");
+  if (dbg_cycle && strlen(dbg_cycle)) {
+    printf("GPGPU-Sim PTX: printing debug information after cycle %s\n", dbg_cycle);
+    fflush(stdout);
+    sscanf(dbg_cycle,"%d", &g_debug_cycle);
+  }
+
   char *dbg_pc = getenv("PTX_SIM_DEBUG_PC");
   if (dbg_pc && strlen(dbg_pc)) {
     printf(
@@ -2630,8 +2827,13 @@ void functionalCoreSim::createWarp(unsigned warpId) {
   }
 
   assert(m_thread[warpId * m_warp_size] != NULL);
-  m_simt_stack[warpId]->launch(m_thread[warpId * m_warp_size]->get_pc(),
-                               initialMask);
+
+  if (m_gpu->simd_model() == POST_DOMINATOR) {
+    m_simt_stack[warpId]->launch(m_thread[warpId*m_warp_size]->get_pc(), initialMask);
+  } else {
+    m_simt_tables[warpId]->launch(m_thread[warpId*m_warp_size]->get_pc(), initialMask);
+  }
+
   char fname[2048];
   snprintf(fname, 2048, "checkpoint_files/warp_%d_0_simt.txt", warpId);
 
@@ -2725,18 +2927,31 @@ void functionalCoreSim::executeWarp(unsigned i, bool &allAtBarrier,
     if (inst.isatomic()) inst.do_atomic(true);
     if (inst.op == BARRIER_OP || inst.op == MEMORY_BARRIER_OP)
       m_warpAtBarrier[i] = true;
-    updateSIMTStack(i, &inst);
+    // updateSIMTStack(i, &inst);
+    updateSIMTDivergenceStructures(i, &inst);
   }
   if (m_liveThreadCount[i] > 0) someOneLive = true;
   if (!m_warpAtBarrier[i] && m_liveThreadCount[i] > 0) allAtBarrier = false;
 }
 
 unsigned gpgpu_context::translate_pc_to_ptxlineno(unsigned pc) {
+  unsigned shader;
+  return translate_pc_to_ptxlineno(pc, shader);
+}
+
+unsigned gpgpu_context::translate_pc_to_ptxlineno(unsigned pc, unsigned &shader) {
   // this function assumes that the kernel fits inside a single PTX file
   // function_info *pFunc = g_func_info; // assume that the current kernel is
   // the one in query
   const ptx_instruction *pInsn = pc_to_instruction(pc);
+  std::string source_filename = pInsn->source_file_str();
   unsigned ptx_line_number = pInsn->source_line();
+
+  if (source_filename.find("MESA") != std::string::npos) {
+    std::string shader_str = source_filename.substr(source_filename.size()-5, 1);
+    int shader_id = std::stoi(shader_str);
+    shader = (unsigned)shader_id;
+  }
 
   return ptx_line_number;
 }

@@ -1,3 +1,31 @@
+// Copyright (c) 2022, Mohammadreza Saed, Yuan Hsi Chou, Lufei Liu, Tor M. Aamodt,
+// The University of British Columbia
+// All rights reserved.
+
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+
+// Redistributions of source code must retain the above copyright notice, this
+// list of conditions and the following disclaimer.
+// Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution. Neither the name of
+// The University of British Columbia nor the names of its contributors may be
+// used to endorse or promote products derived from this software without
+// specific prior written permission.
+
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
 #ifndef VULKAN_ACCELERATION_STRUCTURE_UTIL_H
 #define VULKAN_ACCELERATION_STRUCTURE_UTIL_H
 
@@ -97,13 +125,13 @@ GEN_RT_BVH_INTERNAL_NODE_unpack(struct GEN_RT_BVH_INTERNAL_NODE* dst,
 
    data += 1; //one unused byte
 
-   dst->ChildBoundsExponentX = (int32_t)(*data);
+   dst->ChildBoundsExponentX = (int32_t)(*((int8_t *)data));
    data += 1;
 
-   dst->ChildBoundsExponentY = (int32_t)(*data);
+   dst->ChildBoundsExponentY = (int32_t)(*((int8_t *)data));
    data += 1;
 
-   dst->ChildBoundsExponentZ = (int32_t)(*data);
+   dst->ChildBoundsExponentZ = (int32_t)(*((int8_t *)data));
    data += 1;
 
    dst->NodeRayMask = (uint32_t)(*data);
@@ -365,7 +393,7 @@ GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(struct GEN_RT_BVH_PRIMITIVE_LEAF_DES
       uint32_t temp = *((uint32_t *)data);
       data += 4;
 
-      dst->ShaderIndex = temp & 0xcfffffff;
+      dst->GeometryIndex = temp & 0x0fffffff;
       dst->LeafType = (temp >> 29) & 0x00000001;
       dst->GeometryFlags = (temp >> 30);
    }
@@ -435,8 +463,8 @@ GEN_RT_BVH_PROCEDURAL_LEAF_unpack(struct GEN_RT_BVH_PROCEDURAL_LEAF* dst,
       uint32_t temp = *((uint32_t *)data);
       data += 4;
 
-      dst->NumPrimitives = temp & (1 << 4 - 1);
-      dst->LastPrimitive = temp >> 20;
+      dst->NumPrimitives = temp & ((1 << 4) - 1);
+      dst->LastPrimitive = temp >> 19;
    }
 
    for(int i = 0; i < 13; i++)
@@ -458,7 +486,6 @@ void set_child_bounds(struct GEN_RT_BVH_INTERNAL_NODE *node, int child, float3 *
    hi->y = node->Origin.Y + ldexpf(node->ChildUpperYBound[child], node->ChildBoundsExponentY - 8);
    hi->z = node->Origin.Z + ldexpf(node->ChildUpperZBound[child], node->ChildBoundsExponentZ - 8);
 }
-
 
 
 // struct RT_BVH_VEC3 {

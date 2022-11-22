@@ -395,23 +395,23 @@ void memory_partition_unit::set_dram_power_stats(
 }
 
 void memory_partition_unit::print(FILE *fp) const {
-  fprintf(fp, "Memory Partition %u: \n", m_id);
-  for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
-       p++) {
-    m_sub_partition[p]->print(fp);
-  }
-  fprintf(fp, "In Dram Latency Queue (total = %zd): \n",
-          m_dram_latency_queue.size());
-  for (std::list<dram_delay_t>::const_iterator mf_dlq =
-           m_dram_latency_queue.begin();
-       mf_dlq != m_dram_latency_queue.end(); ++mf_dlq) {
-    mem_fetch *mf = mf_dlq->req;
-    fprintf(fp, "Ready @ %llu - ", mf_dlq->ready_cycle);
-    if (mf)
-      mf->print(fp);
-    else
-      fprintf(fp, " <NULL mem_fetch?>\n");
-  }
+  // fprintf(fp, "Memory Partition %u: \n", m_id);
+  // for (unsigned p = 0; p < m_config->m_n_sub_partition_per_memory_channel;
+  //      p++) {
+  //   m_sub_partition[p]->print(fp);
+  // }
+  // fprintf(fp, "In Dram Latency Queue (total = %zd): \n",
+  //         m_dram_latency_queue.size());
+  // for (std::list<dram_delay_t>::const_iterator mf_dlq =
+  //          m_dram_latency_queue.begin();
+  //      mf_dlq != m_dram_latency_queue.end(); ++mf_dlq) {
+  //   mem_fetch *mf = mf_dlq->req;
+  //   fprintf(fp, "Ready @ %llu - ", mf_dlq->ready_cycle);
+  //   if (mf)
+  //     mf->print(fp);
+  //   else
+  //     fprintf(fp, " <NULL mem_fetch?>\n");
+  // }
   m_dram->print(fp);
 }
 
@@ -523,8 +523,7 @@ void memory_sub_partition::cache_cycle(unsigned cycle) {
         std::list<cache_event> events;
         enum cache_request_status status =
             m_L2cache->access(mf->get_addr(), mf,
-                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle +
-                                  m_memcpy_cycle_offset,
+                              m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle,
                               events);
         bool write_sent = was_write_sent(events);
         bool read_sent = was_read_sent(events);
@@ -758,22 +757,12 @@ memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
       result.push_back(n_mf);
     }
   } else {
-    for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
-      if (sector_mask.test(i)) {
-        mem_access_byte_mask_t mask;
-        for (unsigned k = i * SECTOR_SIZE; k < (i + 1) * SECTOR_SIZE; k++) {
-          mask.set(k);
-        }
-        mem_fetch *n_mf = m_mf_allocator->alloc(
-            mf->get_addr() + SECTOR_SIZE * i, mf->get_access_type(),
-            mf->get_access_warp_mask(), mf->get_access_byte_mask() & mask,
-            std::bitset<SECTOR_CHUNCK_SIZE>().set(i), SECTOR_SIZE,
-            mf->is_write(), m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,
-            mf->get_wid(), mf->get_sid(), mf->get_tpc(), mf);
-
-        result.push_back(n_mf);
-      }
-    }
+    printf(
+        "Invalid sector received, address = 0x%06llx, sector mask = %d, byte "
+        "mask = , data size = %u\n",
+        mf->get_addr(), mf->get_access_sector_mask().count(),
+        mf->get_data_size());
+    assert(0 && "Undefined data size is received");
   }
   if (result.size() == 0) assert(0 && "no mf sent");
   return result;

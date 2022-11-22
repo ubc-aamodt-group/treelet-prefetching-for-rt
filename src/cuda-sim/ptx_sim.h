@@ -58,7 +58,6 @@ struct param_t {
 #include "memory.h"
 
 using half_float::half;
-
 union ptx_reg_t {
   ptx_reg_t() {
     bits.ms = 0;
@@ -304,6 +303,7 @@ class ptx_thread_info {
     m_hw_wid = wid;
     m_hw_tid = tid;
     m_functionalSimulationMode = fsim;
+    m_num_ray_intersections = 0;
   }
 
   void ptx_fetch_inst(inst_t &inst) const;
@@ -343,6 +343,14 @@ class ptx_thread_info {
   dim3 get_nctaid() const { return m_nctaid; }
   dim3 get_tid() const { return m_tid; }
   dim3 get_ntid() const { return m_ntid; }
+  // dim3 get_vulkan_RT_launch_id() const {
+  //   dim3 launch_id;
+  //   launch_id.x = thread->get_tid().x + thread->get_ctaid().x * 32;
+  //   launch_id.y = thread->get_ctaid().y;
+  //   launch_id.z = thread->get_ctaid().z;
+  //   return launch_id;
+  // }
+
   class gpgpu_sim *get_gpu() {
     return (gpgpu_sim *)m_gpu;
   }
@@ -355,6 +363,8 @@ class ptx_thread_info {
   unsigned get_icount() const { return m_icount; }
   void set_valid() { m_valid = true; }
   addr_t last_eaddr() const { return m_last_effective_address; }
+  std::vector<addr_t> last_eaddrs() const { return m_last_effective_addresses; }
+  unsigned last_size() const { return m_last_effective_size; }
   memory_space_t last_space() const { return m_last_memory_space; }
   dram_callback_t last_callback() const { return m_last_dram_callback; }
   unsigned long long get_cta_uid() { return m_cta_info->get_sm_idx(); }
@@ -474,9 +484,18 @@ class ptx_thread_info {
 
   // Jin: get corresponding kernel grid for CDP purpose
   kernel_info_t &get_kernel() { return m_kernel; }
+  
+  void set_rt_transactions(std::vector<MemoryTransactionRecord> transactions) { RT_transactions = transactions; }
+  void set_rt_store_transactions(std::vector<MemoryStoreTransactionRecord> store_transactions) { RT_store_transactions = store_transactions; }
+  void set_txl_transactions(std::vector<ImageMemoryTransactionRecord> transaction);
+  void set_txl_transactions(ImageMemoryTransactionRecord transactions);
+  void add_ray_intersect() { m_num_ray_intersections += 1; }
+  void add_ray_properties(Ray ray) { m_ray = ray; }
 
  public:
   addr_t m_last_effective_address;
+  std::vector<addr_t> m_last_effective_addresses;
+  unsigned m_last_effective_size;
   bool m_branch_taken;
   memory_space_t m_last_memory_space;
   dram_callback_t m_last_dram_callback;
@@ -487,6 +506,8 @@ class ptx_thread_info {
   ptx_cta_info *m_cta_info;
   ptx_reg_t m_last_set_operand_value;
   Vulkan_RT_thread_data* RT_thread_data;
+  std::vector<MemoryTransactionRecord> RT_transactions;
+  std::vector<MemoryStoreTransactionRecord> RT_store_transactions;
 
  private:
   bool m_functionalSimulationMode;
@@ -530,6 +551,9 @@ class ptx_thread_info {
   bool m_enable_debug_trace;
 
   std::stack<class operand_info, std::vector<operand_info> > m_breakaddrs;
+  
+  unsigned m_num_ray_intersections;
+  Ray m_ray;
 };
 
 addr_t generic_to_local(unsigned smid, unsigned hwtid, addr_t addr);

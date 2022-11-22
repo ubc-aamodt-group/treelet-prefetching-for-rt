@@ -1,10 +1,10 @@
-// Copyright (c) 2009-2011, Tor M. Aamodt,
+// Copyright (c) 2022, Mohammadreza Saed, Yuan Hsi Chou, Lufei Liu, Tor M. Aamodt,
 // The University of British Columbia
 // All rights reserved.
-//
+
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
-//
+
 // Redistributions of source code must retain the above copyright notice, this
 // list of conditions and the following disclaimer.
 // Redistributions in binary form must reproduce the above copyright notice,
@@ -13,7 +13,7 @@
 // The University of British Columbia nor the names of its contributors may be
 // used to endorse or promote products derived from this software without
 // specific prior written permission.
-//
+
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 // IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
@@ -26,32 +26,26 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
 // POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef STATS_INCLUDED
-#define STATS_INCLUDED
+#ifndef ANV_INCLUDE_H
+#define ANV_INCLUDE_H
 
-enum mem_stage_access_type {
-  C_MEM,
-  T_MEM,
-  S_MEM,
-  RT_C_MEM,
-  G_MEM_LD,
-  L_MEM_LD,
-  G_MEM_ST,
-  L_MEM_ST,
-  N_MEM_STAGE_ACCESS_TYPE
-};
-enum tlb_request_status { TLB_HIT = 0, TLB_READY, TLB_PENDING };
-enum mem_stage_stall_type {
-  NO_RC_FAIL = 0,
-  BK_CONF,
-  MSHR_RC_FAIL,
-  ICNT_RC_FAIL,
-  COAL_STALL,
-  TLB_STALL,
-  DATA_PORT_STALL,
-  WB_ICNT_RC_FAIL,
-  WB_CACHE_RSRV_FAIL,
-  N_MEM_STAGE_STALL_TYPE
-};
+#define HAVE_PTHREAD
+#define UTIL_ARCH_LITTLE_ENDIAN 1
+#define UTIL_ARCH_BIG_ENDIAN 0
+#define signbit signbit
+
+#define UINT_MAX 65535
+#define GLuint MESA_GLuint
+#include "isl/isl.h"
+#include "isl/isl_tiled_memcpy.c"
+#include "vulkan/anv_private.h"
+#undef GLuint
+
+#undef HAVE_PTHREAD
+#undef UTIL_ARCH_LITTLE_ENDIAN
+#undef UTIL_ARCH_BIG_ENDIAN
+#undef signbit
+
+#include "vulkan/anv_public.h"
 
 #endif

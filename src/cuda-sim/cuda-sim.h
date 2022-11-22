@@ -127,6 +127,7 @@ class cuda_sim {
     g_inst_op_classification_stat = NULL;
     g_assemble_code_next_pc = 0;
     g_debug_thread_uid = 0;
+    g_debug_cycle = 0;
     g_override_embedded_ptx = false;
     ptx_tex_regs = NULL;
     g_ptx_thread_info_delete_count = 0;
@@ -149,6 +150,23 @@ class cuda_sim {
   int cp_cta_resume;
   int g_ptxinfo_error_detected;
   unsigned g_ptx_sim_num_insn;
+  
+  // Ray tracing memory access type stats
+  unsigned g_rt_mem_access_type[static_cast<int>(TransactionType::UNDEFINED)];
+  unsigned g_rt_num_hits; 
+  bool g_rt_world_set = false;
+  float3 g_rt_world_min;
+  float3 g_rt_world_max;
+  unsigned g_n_anyhit_rays;
+  unsigned g_n_closesthit_rays;
+  unsigned g_max_nodes_per_ray;
+  unsigned g_tot_nodes_per_ray;
+  unsigned g_max_tree_depth;
+  unsigned g_total_shaders;
+  unsigned long long g_inst_type_latency[28] = {0};
+  unsigned g_inst_class_stat[6][20];
+  std::vector<std::pair<unsigned, unsigned> > g_traceray_instructions;
+  
   char *cdp_latency_str;
   int g_ptx_kernel_count;  // used for classification stat collection purposes
   std::map<const void *, std::string>
@@ -169,6 +187,7 @@ class cuda_sim {
   unsigned cdp_latency[5];
   unsigned g_assemble_code_next_pc;
   int g_debug_thread_uid;
+  int g_debug_cycle = 0;
   bool g_override_embedded_ptx;
   std::set<unsigned long long> g_ptx_cta_info_sm_idx_used;
   ptx_reg_t *ptx_tex_regs;

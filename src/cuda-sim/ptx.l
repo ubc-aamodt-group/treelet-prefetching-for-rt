@@ -174,6 +174,9 @@ load_primitive_id    TC; yylval->int_value = LOAD_PRIMITIVE_ID_OP; return OPCODE
 load_ray_world_to_object    TC; yylval->int_value = LOAD_RAY_WORLD_TO_OBJECT_OP; return OPCODE;
 load_ray_object_to_world    TC; yylval->int_value = LOAD_RAY_OBJECT_TO_WORLD_OP; return OPCODE;
 load_ray_world_direction    TC; yylval->int_value = LOAD_RAY_WORLD_DIRECTION_OP; return OPCODE;
+load_ray_world_origin    TC; yylval->int_value = LOAD_RAY_WORLD_ORIGIN_OP; return OPCODE;
+load_ray_t_max    TC; yylval->int_value = LOAD_RAY_T_MAX_OP; return OPCODE;
+load_ray_t_min    TC; yylval->int_value = LOAD_RAY_T_MIN_OP; return OPCODE;
 vulkan_resource_index   TC; yylval->int_value = VK_RESOURCE_INDEX_OP; return OPCODE;
 load_vulkan_descriptor  TC; yylval->int_value = LD_VK_DESC_OP; return OPCODE;
 deref_var   TC; yylval->int_value = DEREF_VAR_OP; return OPCODE;
@@ -188,12 +191,26 @@ call_closest_hit_shader   TC; yylval->int_value = CALL_CLOSEST_HIT_SHADER_OP; re
 call_intersection_shader   TC; yylval->int_value = CALL_INTERSECTION_SHADER_OP; return OPCODE;
 call_any_hit_shader   TC; yylval->int_value = CALL_ANY_HIT_SHADER_OP; return OPCODE;
 image_deref_store   TC; yylval->int_value = IMG_DEREF_ST_OP; return OPCODE;
+image_deref_load   TC; yylval->int_value = IMG_DEREF_LD_OP; return OPCODE;
 store_deref TC; yylval->int_value = ST_DEREF_OP; return OPCODE;
 rt_alloc_mem TC; yylval->int_value = RT_ALLOC_MEM_OP; return OPCODE;
 wrap_32_4 TC; yylval->int_value = WRAP_32_4_OP; return OPCODE;
 unwrap_32_4 TC; yylval->int_value = UNWRAP_32_4_OP; return OPCODE;
 get_element_32 TC; yylval->int_value = GET_ELEMENT_32_OP; return OPCODE;
 set_element_32 TC; yylval->int_value = SET_ELEMENT_32_OP; return OPCODE;
+txl TC; yylval->int_value = TXL_OP; return OPCODE;
+shader_clock TC; yylval->int_value = SHADER_CLOCK_OP; return OPCODE;
+copysignf TC; yylval->int_value = COPYSIGNF_OP; return OPCODE;
+report_ray_intersection TC; yylval->int_value = REPORT_RAY_INTERSECTION_OP; return OPCODE;
+run_intersection TC; yylval->int_value = RUN_INTERSECTION_OP; return OPCODE;
+get_intersection_index TC; yylval->int_value = GET_INTERSECTION_INDEX_OP; return OPCODE;
+intersection_exit TC; yylval->int_value = INTERSECTION_EXIT_OP; return OPCODE;
+hit_geometry TC; yylval->int_value = HIT_GEOMETRY_OP; return OPCODE;
+get_hitgroup TC; yylval->int_value = GET_HITGROUP_OP; return OPCODE;
+get_warp_hitgroup TC; yylval->int_value = GET_WARP_HITGROUP_OP; return OPCODE;
+get_closest_hit_shaderID TC; yylval->int_value = GET_CLOSEST_HIT_SHADERID_OP; return OPCODE;
+get_intersection_shaderID TC; yylval->int_value = GET_INTERSECTION_SHADERID_OP; return OPCODE;
+get_intersection_shader_data_address TC; yylval->int_value = GET_INTERSECTION_SHADER_DATE_ADDRESS_OP; return OPCODE;
 
 
 "CPTX_END"	printf("ENDING CUSTOM PTX.\n"); BEGIN(IN_COMMENT);

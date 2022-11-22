@@ -391,7 +391,11 @@ class gpgpu_sim_config : public power_config,
       s++;
     }
     char buf[1024];
-    snprintf(buf, 1024, "gpgpusim_visualizer__%s.log.gz", date);
+    if (g_visualizer_filename == 0x0) {
+      snprintf(buf, 1024, "gpgpusim_visualizer__%s.log.gz", date);
+    } else {
+      snprintf(buf, 1024, "aerialvision__%s__%s.log.gz", g_visualizer_filename, date);
+    }
     g_visualizer_filename = strdup(buf);
 
     m_valid = true;
@@ -430,6 +434,8 @@ class gpgpu_sim_config : public power_config,
   double l2_period;
 
   // GPGPU-Sim timing model options
+  bool gpu_intermittent_stats;
+  int gpu_intermittent_stats_freq;
   unsigned long long gpu_max_cycle_opt;
   unsigned long long gpu_max_insn_opt;
   unsigned gpu_max_cta_opt;
@@ -548,6 +554,7 @@ class gpgpu_sim : public gpgpu_t {
   void get_pdom_stack_top_info(unsigned sid, unsigned tid, unsigned *pc,
                                unsigned *rpc);
 
+  bool print_intermittent_stats(unsigned long long cycle) const;
   int shared_mem_size() const;
   int shared_mem_per_block() const;
   int compute_capability_major() const;
@@ -561,6 +568,7 @@ class gpgpu_sim : public gpgpu_t {
   const struct cudaDeviceProp *get_prop() const;
   enum divergence_support_t simd_model() const;
 
+  const struct shader_core_config *get_shader_config() const;
   unsigned threads_per_core() const;
   bool get_more_cta_left() const;
   bool kernel_more_cta_left(kernel_info_t *kernel) const;
@@ -572,6 +580,7 @@ class gpgpu_sim : public gpgpu_t {
   const gpgpu_sim_config &get_config() const { return m_config; }
   void gpu_print_stat();
   void dump_pipeline(int mask, int s, int m) const;
+  void dump_rt_pipeline(int sid) const;
 
   void perf_memcpy_to_gpu(size_t dst_start_addr, size_t count);
 
@@ -601,6 +610,8 @@ class gpgpu_sim : public gpgpu_t {
 
   void hit_watchpoint(unsigned watchpoint_num, ptx_thread_info *thd,
                       const ptx_instruction *pI);
+
+  const struct shader_core_config* get_shader_config() { return m_shader_config; }
 
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
@@ -704,6 +715,8 @@ class gpgpu_sim : public gpgpu_t {
   bool has_special_cache_config(std::string kernel_name);
   void change_cache_config(FuncCache cache_config);
   void set_cache_config(std::string kernel_name);
+  
+  void visualizer_print_traceray();
 
   // Jin: functional simulation for CDP
  private:

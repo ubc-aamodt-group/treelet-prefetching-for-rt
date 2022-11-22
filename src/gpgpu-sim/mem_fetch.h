@@ -86,7 +86,11 @@ class mem_fetch {
   unsigned size() const { return m_data_size + m_ctrl_size; }
   bool is_write() { return m_access.is_write(); }
   void set_addr(new_addr_type addr) { m_access.set_addr(addr); }
+  void set_uncoalesced_addr(new_addr_type addr) { m_access.set_uncoalesced_addr(addr); }
+  void set_uncoalesced_base_addr(new_addr_type addr) { m_access.set_uncoalesced_base_addr(addr); }
   new_addr_type get_addr() const { return m_access.get_addr(); }
+  new_addr_type get_uncoalesced_addr() const { return m_access.get_uncoalesced_addr(); }
+  new_addr_type get_uncoalesced_base_addr() const { return m_access.get_uncoalesced_base_addr(); }
   unsigned get_access_size() const { return m_access.get_size(); }
   new_addr_type get_partition_addr() const { return m_partition_addr; }
   unsigned get_sub_partition_id() const { return m_raw_addr.sub_partition; }
@@ -99,6 +103,8 @@ class mem_fetch {
   bool isconst() const;
   enum mf_type get_type() const { return m_type; }
   bool isatomic() const;
+  bool israytrace() const { return m_inst.empty() ? false : m_inst.op == RT_CORE_OP || m_israytrace; }
+  void set_raytrace() {m_israytrace = true; }
 
   void set_return_timestamp(unsigned t) { m_timestamp2 = t; }
   void set_icnt_receive_time(unsigned t) { m_icnt_receive_time = t; }
@@ -162,6 +168,8 @@ class mem_fetch {
 
   // requesting instruction (put last so mem_fetch prints nicer in gdb)
   warp_inst_t m_inst;
+  
+  bool m_israytrace;
 
   static unsigned sm_next_mf_request_uid;
 

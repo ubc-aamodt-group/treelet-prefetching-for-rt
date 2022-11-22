@@ -146,6 +146,10 @@ bool stream_operation::do_operation(gpgpu_sim *gpu) {
       m_stream->record_next_done();
       break;
     case stream_kernel_launch:
+      if ((m_kernel->get_uid() > (m_kernel->m_max_simulated_kernels)) && (m_kernel->m_max_simulated_kernels != 0)) {
+        printf("Max simulated kernels of %d has reached, aborting.\n", m_kernel->m_max_simulated_kernels);
+        exit(0);
+      }
       if (m_sim_mode) {  // Functional Sim
         if (g_debug_execution >= 3) {
           printf("kernel %d: \'%s\' transfer to GPU hardware scheduler\n",
@@ -239,7 +243,7 @@ stream_manager::stream_manager(gpgpu_sim *gpu, bool cuda_launch_blocking) {
 }
 
 bool stream_manager::operation(bool *sim) {
-  bool check = check_finished_kernel();
+  bool check = special_check_finished_kernel();
   pthread_mutex_lock(&m_lock);
   //    if(check)m_gpu->print_stats();
   stream_operation op = front();
@@ -262,6 +266,24 @@ bool stream_manager::check_finished_kernel() {
   unsigned grid_uid = m_gpu->finished_kernel();
   bool check = register_finished_kernel(grid_uid);
   return check;
+}
+
+bool stream_manager::special_check_finished_kernel() {
+  unsigned grid_uid = m_gpu->finished_kernel();
+  if (grid_uid > 0) {
+    CUstream_st *stream = m_grid_id_to_stream[grid_uid];
+    kernel_info_t *kernel = stream->front().get_kernel();
+    assert(grid_uid == kernel->get_uid());
+    if (kernel->is_finished()) {
+      m_grid_uid = grid_uid;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool stream_manager::register_finished_kernel() {
+  return register_finished_kernel(m_grid_uid);
 }
 
 bool stream_manager::register_finished_kernel(unsigned grid_uid) {

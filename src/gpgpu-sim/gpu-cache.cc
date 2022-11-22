@@ -50,8 +50,8 @@ const char *cache_request_status_str(enum cache_request_status status) {
 
 const char *cache_fail_status_str(enum cache_reservation_fail_reason status) {
   static const char *static_cache_reservation_fail_reason_str[] = {
-      "LINE_ALLOC_FAIL", "MISS_QUEUE_FULL", "MSHR_ENRTY_FAIL",
-      "MSHR_MERGE_ENRTY_FAIL", "MSHR_RW_PENDING"};
+      "LINE_ALLOC_FAIL", "MISS_QUEUE_FULL", "MSHR_ENTRY_FAIL",
+      "MSHR_MERGE_ENTRY_FAIL", "MSHR_RW_PENDING"};
 
   assert(sizeof(static_cache_reservation_fail_reason_str) /
              sizeof(const char *) ==
@@ -557,6 +557,7 @@ bool mshr_table::full(new_addr_type block_addr) const {
 
 /// Add or merge this access
 void mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
+  assert(mf != NULL); //if (mf == NULL) return; TIMING_TODO: WHY bug?
   m_data[block_addr].m_list.push_back(mf);
   assert(m_data.size() <= m_num_entries);
   assert(m_data[block_addr].m_list.size() <= m_max_merged);
@@ -606,6 +607,14 @@ mem_fetch *mshr_table::next_access() {
   return result;
 }
 
+bool mshr_table::next_access_rt() {
+  assert(access_ready());
+  new_addr_type block_addr = m_current_response.front();
+  assert(!m_data[block_addr].m_list.empty());
+  mem_fetch *result = m_data[block_addr].m_list.front();
+  return result->israytrace();
+}
+
 void mshr_table::display(FILE *fp) const {
   fprintf(fp, "MSHR contents\n");
   for (table::const_iterator e = m_data.begin(); e != m_data.end(); ++e) {
@@ -620,6 +629,10 @@ void mshr_table::display(FILE *fp) const {
       fprintf(fp, " no memory requests???\n");
     }
   }
+}
+
+std::list<mem_fetch*> mshr_table::get_mf_list(new_addr_type block_addr) {
+  return m_data[block_addr].m_list;
 }
 /***************************************************************** Caches
  * *****************************************************************/
@@ -783,6 +796,13 @@ cache_stats &cache_stats::operator+=(const cache_stats &cs) {
   m_cache_port_available_cycles += cs.m_cache_port_available_cycles;
   m_cache_data_port_busy_cycles += cs.m_cache_data_port_busy_cycles;
   m_cache_fill_port_busy_cycles += cs.m_cache_fill_port_busy_cycles;
+
+  #define DETAILED_CACHE_STATS
+  #ifdef DETAILED_CACHE_STATS
+  g_rt_miss += cs.g_rt_miss;
+  g_rt_cold_miss += cs.g_rt_cold_miss;
+  g_nonrt_miss += cs.g_nonrt_miss;
+  #endif
   return *this;
 }
 
@@ -815,6 +835,12 @@ void cache_stats::print_stats(FILE *fout, const char *cache_name) const {
               mem_access_type_str((enum mem_access_type)type), "TOTAL_ACCESS",
               total_access[type]);
   }
+
+  #ifdef DETAILED_CACHE_STATS
+  fprintf(fout, "nonrt_miss = %d\n", g_nonrt_miss);
+  fprintf(fout, "rt_cold_miss = %d\n", g_rt_cold_miss);
+  fprintf(fout, "rt_miss = %d\n", g_rt_miss);
+  #endif
 }
 
 void cache_stats::print_fail_stats(FILE *fout, const char *cache_name) const {
@@ -1123,6 +1149,11 @@ void baseline_cache::print(FILE *fp, unsigned &accesses,
   m_tag_array->print(fp, accesses, misses);
 }
 
+void baseline_cache::get_stats(unsigned &total_access, unsigned &total_misses,
+                          unsigned &total_hit_res,
+                          unsigned &total_res_fail) const {
+  m_tag_array->get_stats(total_access, total_misses, total_hit_res, total_res_fail);
+}
 void baseline_cache::display_state(FILE *fp) const {
   fprintf(fp, "Cache %s:\n", m_name.c_str());
   m_mshrs.display(fp);
@@ -1181,9 +1212,9 @@ void baseline_cache::send_read_request(new_addr_type addr,
 
     do_miss = true;
   } else if (mshr_hit && !mshr_avail)
-    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL);
+    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENTRY_FAIL);
   else if (!mshr_hit && !mshr_avail)
-    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENRTY_FAIL);
+    m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL);
   else
     assert(0);
 }
@@ -1323,9 +1354,9 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
     if (miss_queue_full(2))
       m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
     else if (mshr_hit && !mshr_avail)
-      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL);
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENTRY_FAIL);
     else if (!mshr_hit && !mshr_avail)
-      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENRTY_FAIL);
+      m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL);
     else
       assert(0);
 
@@ -1444,9 +1475,9 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
       if (miss_queue_full(1))
         m_stats.inc_fail_stats(mf->get_access_type(), MISS_QUEUE_FULL);
       else if (mshr_hit && !mshr_avail)
-        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENRTY_FAIL);
+        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_MERGE_ENTRY_FAIL);
       else if (!mshr_hit && !mshr_avail)
-        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENRTY_FAIL);
+        m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL);
       else
         assert(0);
 
@@ -1761,6 +1792,25 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
                     m_stats.select_stats_status(probe_status, access_status));
   m_stats.inc_stats_pw(mf->get_access_type(), m_stats.select_stats_status(
                                                   probe_status, access_status));
+  
+  #ifdef DETAILED_CACHE_STATS
+  // Check if this is a RT access
+  if (access_status == MISS) {
+    if (mf->israytrace()) {
+      // Check if cold start
+      if (m_addr_set.find(addr) == m_addr_set.end()) {
+        m_addr_set.insert(addr);
+        m_stats.g_rt_cold_miss++;
+      }
+      else {
+        m_stats.g_rt_miss++;
+      }
+
+    } else {
+      m_stats.g_nonrt_miss++;
+    }
+  }
+  #endif
   return access_status;
 }
 
@@ -1791,6 +1841,7 @@ enum cache_request_status l2_cache::access(new_addr_type addr, mem_fetch *mf,
 enum cache_request_status tex_cache::access(new_addr_type addr, mem_fetch *mf,
                                             unsigned time,
                                             std::list<cache_event> &events) {
+  TXL_DPRINTF("Accessing texture cache for 0x%x\n", mf->get_addr())
   if (m_fragment_fifo.full() || m_request_fifo.full() || m_rob.full())
     return RESERVATION_FAIL;
 
@@ -1867,8 +1918,8 @@ void tex_cache::cycle() {
 }
 
 /// Place returning cache block into reorder buffer
-void tex_cache::fill(mem_fetch *mf, unsigned time) {
-  if (m_config.m_mshr_type == SECTOR_TEX_FIFO) {
+void tex_cache::fill(mem_fetch *mf, unsigned time, bool perfect_mem) {
+  if (m_config.m_mshr_type == SECTOR_TEX_FIFO && !perfect_mem) {
     assert(mf->get_original_mf());
     extra_mf_fields_lookup::iterator e =
         m_extra_mf_fields.find(mf->get_original_mf());

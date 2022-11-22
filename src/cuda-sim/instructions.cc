@@ -54,6 +54,7 @@ class ptx_recognizer;
 #include "ptx.tab.h"
 #include "ptx_loader.h"
 #include "vulkan_ray_tracing.h"
+#include "vulkan_rt_thread_data.h"
 
 // Jin: include device runtime for CDP
 #include "cuda_device_runtime.h"
@@ -947,7 +948,11 @@ void addp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       carry = (data.u64 & 0x100000000) >> 32;
       break;
     case S64_TYPE:
-      data.s64 = src1_data.s64 + src2_data.s64 + (src3_data.pred & 0x4);
+      if (src2.is_literal()) {
+        data.s64 = src1_data.s64 + src2_data.s32 + (src3_data.pred & 0x4);
+      } else {
+        data.s64 = src1_data.s64 + src2_data.s64 + (src3_data.pred & 0x4);
+      }
       break;
     case U8_TYPE:
       data.u64 = (src1_data.u64 & 0xFF) + (src2_data.u64 & 0xFF) +
@@ -986,15 +991,18 @@ void addp_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   thread->set_operand_value(dst, data, i_type, thread, pI, overflow, carry);
 }
 
+bool print_debug_insts = false;
+
 void add_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
-    // {
-    //   printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-    //                                     thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-    //                                     thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-    //   fflush(stdout);
-    // }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
 
   ptx_reg_t src1_data, src2_data, data;
   int overflow = 0;
@@ -1620,6 +1628,8 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
   thread->m_last_dram_callback.instruction = pIin;
 }
 
+
+// TODO-LUCY: Check if this implementation matches AWARE
 void bfe_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned i_type = pI->get_type();
   unsigned msb = (i_type == U32_TYPE || i_type == S32_TYPE) ? 31 : 63;
@@ -1773,12 +1783,13 @@ void bfind_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void bra_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   // //   if(thread->get_ctaid().x == 2 && thread->get_ctaid().y == 89 && thread->get_ctaid().z == 0)
-  //   {
-  //     printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-  //                                       thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-  //                                       thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-  //     fflush(stdout);
-  //   }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
   
   // if(pI->source_line() == 940)
   //   printf("this is where things actuallyn go wrong\n");
@@ -2236,11 +2247,11 @@ void call_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   gpgpu_sim *gpu = thread->get_gpu();
   unsigned callee_pc = 0, callee_rpc = 0;
-  if (gpu->simd_model() == POST_DOMINATOR) {
+  // if (gpu->simd_model() == POST_DOMINATOR) {
     thread->get_core()->get_pdom_stack_top_info(thread->get_hw_wid(),
                                                 &callee_pc, &callee_rpc);
     assert(callee_pc == thread->get_pc());
-  }
+  // }
 
   thread->callstack_push(callee_pc + pI->inst_size(), callee_rpc,
                          return_var_src, return_var_dst, call_uid_next++);
@@ -3393,20 +3404,15 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
 void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   // //   if(thread->get_ctaid().x == 2 && thread->get_ctaid().y == 89 && thread->get_ctaid().z == 0)
-  //   {
-  //     printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-  //                                       thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-  //                                       thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-  //     fflush(stdout);
-  //   }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
-
-  // if(thread->func_info()->get_name() == "MESA_SHADER_RAYGEN_func0_main")
-  //   if(dst.get_symbol()->name() == "%ssa_108_0")
-  //   {
-  //     printf("this is where we should break\n");
-  //   }
 
   unsigned type = pI->get_type();
 
@@ -3416,8 +3422,8 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;
-  addr_t addr = src1_data.u32;
-  char* addr64 = (char*) (src1_data.u64); // MRS_TODO: check how this changes other load instructions
+  // addr_t addr = src1_data.u32;
+  addr_t addr = src1_data.u64;
 
   decode_space(space, thread, src1, mem, addr);
 
@@ -3426,8 +3432,8 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   data.u64 = 0;
   type_info_key::type_decode(type, size, t);
   if (!vector_spec) {
-    // mem->read(addr, size / 8, &data.s64); // MRS_TODO: this is the correct one needed
-    memcpy(&(data.s64), addr64, size / 8);
+    mem->read(addr, size / 8, &data.s64); // MRS_TODO: this is the correct one needed
+    // memcpy(&(data.s64), addr64, size / 8);
     // printf("float value = %f\n", *((float*)addr64));
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
     thread->set_operand_value(dst, data, type, thread, pI);
@@ -3494,6 +3500,7 @@ void mma_st_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 
     memory_space *mem = NULL;
     addr_t addr = addr_reg.u32;
+    assert(0); // 32 bit address
 
     new_addr_type mem_txn_addr[MAX_ACCESSES_PER_INSN_PER_THREAD];
     int num_mem_txn = 0;
@@ -3614,6 +3621,7 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
 
     memory_space *mem = NULL;
     addr_t addr = src1_data.u32;
+    assert(0); // 32 bit address
     smid = thread->get_hw_sid();
     if (whichspace(addr) == shared_space) {
       addr = generic_to_shared(smid, addr);
@@ -4165,12 +4173,13 @@ static int _count = 0;
 void mov_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
-    // {
-    //   printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-    //                                     thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-    //                                     thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-    //   fflush(stdout);
-    // }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
   // if(thread->get_tid().x == 6)
   //   if(pI->dst().name() == "%ssa_233")
   //     if(pI->src1().name() == "%ssa_166")
@@ -4348,12 +4357,13 @@ void mul24_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void mul_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
-    // {
-    //   printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-    //                                     thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-    //                                     thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-    //   fflush(stdout);
-    // }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
   ptx_reg_t data;
 
   const operand_info &dst = pI->dst();
@@ -4862,36 +4872,13 @@ void rem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void ret_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
     // if(thread->get_ctaid().x == 2 && thread->get_ctaid().y == 89 && thread->get_ctaid().z == 0)
-    // {
-    //   printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-    //                                     thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-    //                                     thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-    //   fflush(stdout);
-    // }
-  
-  // if(thread->get_tid().x == 1 && thread->get_tid().y == 0 && thread->get_tid().z == 0 &&
-  //               thread->get_ctaid().x == 2 && thread->get_ctaid().y == 89 && thread->get_ctaid().z == 0)
-  //     printf("this is where things go wrong\n");
-
-  if(thread->func_info()->get_name() == "MESA_SHADER_CLOSEST_HIT_func3_main")
-  {
-    // printf("This is the other place\n");
-  }
-  
-
-  // if(thread->func_info()->get_name() == "MESA_SHADER_CLOSEST_HIT_func3_main")
-  // {
-  //   float NdotL = thread->get_reg("%ssa_162").f32;
-  //   RayDebugGPUData &rayDebugGPUData = VulkanRayTracing::rayDebugGPUData[thread->get_tid().x + thread->get_ctaid().x * 32][thread->get_ctaid().y];
-  //   if(rayDebugGPUData.valid)
-  //     if(std::abs(rayDebugGPUData.P.x - thread->get_reg("%ssa_153").f32) > 0.0001 ||
-  //             std::abs(rayDebugGPUData.P.y - thread->get_reg("%ssa_154").f32) > 0.0001 || 
-  //             std::abs(rayDebugGPUData.P.z - thread->get_reg("%ssa_155").f32) > 0.0001)
-  //     {
-  //       printf("###### bad ray: (%d, %d)\n", thread->get_tid().x + thread->get_ctaid().x * 32, thread->get_ctaid().y);
-  //       fflush(stdout);
-  //     }
-  // }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
 
   bool empty = thread->callstack_pop();
   if (empty) {
@@ -5038,6 +5025,9 @@ bool isFloat(int type) {
 
 bool CmpOp(int type, ptx_reg_t a, ptx_reg_t b, unsigned cmpop) {
   bool t = false;
+
+  // TODO-LUCY: Find out what "td" is used for
+  bool td = false;
 
   switch (type) {
     case B16_TYPE:
@@ -5779,6 +5769,7 @@ void sst_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   memory_space *mem = NULL;
   addr_t addr =
       src2_data.u32 * 4;  // this assumes sstarr memory starts at address 0
+  assert(0); //32 bit address
   ptx_cta_info *cta_info = thread->m_cta_info;
 
   decode_space(space, thread, src1, mem, addr);
@@ -5858,12 +5849,13 @@ void ssy_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
     // if(thread->get_ctaid().x == 2 && thread->get_ctaid().y == 89 && thread->get_ctaid().z == 0)
-    // {
-    //   printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-    //                                     thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-    //                                     thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-    //   fflush(stdout);
-    // }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();  // may be scalar or vector of regs
   unsigned type = pI->get_type();
@@ -5873,10 +5865,10 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned vector_spec = pI->get_vector();
 
   memory_space *mem = NULL;
-  addr_t addr = addr_reg.u32;
-  void* address = (void*)(addr_reg.u64);
+  // addr_t addr = addr_reg.u32;
+  addr_t addr = addr_reg.u64;
 
-  // decode_space(space, thread, dst, mem, addr);
+  decode_space(space, thread, dst, mem, addr);
 
   size_t size;
   int t;
@@ -5884,9 +5876,9 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
-    //mem->write(addr, size / 8, &data.s64, thread, pI);
-    assert(size == 32);
-    memcpy(address, &data.s64, size / 8);
+    mem->write(addr, size / 8, &data.s64, thread, pI);
+    // assert(size == 32);
+    // memcpy(address, &data.s64, size / 8);
     // *address = data.f32;
   } else {
     assert (0);
@@ -6733,8 +6725,8 @@ void load_ray_launch_id_impl(const ptx_instruction *pI, ptx_thread_info *thread)
   v[1] = thread->get_ctaid().y;
   v[2] = thread->get_ctaid().z;
 
-  // v[0] = 1024 + thread->get_tid().x;
-  // v[1] = 230;
+  // v[0] = 0;
+  // v[1] = 30;
   // v[2] = 0;
 
   ptx_reg_t data;
@@ -6754,13 +6746,13 @@ void load_ray_launch_size_impl(const ptx_instruction *pI, ptx_thread_info *threa
   const operand_info &src1 = pI->src1();
   const operand_info &src2 = pI->src2();
   uint32_t v[4];
-  v[0] = thread->get_ntid().x * thread->get_nctaid().x;
-  v[1] = thread->get_nctaid().y;
-  v[2] = thread->get_nctaid().z;
+  v[0] = thread->get_kernel().vulkan_metadata.launch_width;
+  v[1] = thread->get_kernel().vulkan_metadata.launch_height;
+  v[2] = thread->get_kernel().vulkan_metadata.launch_depth;
 
-  // v[0] = 1280;
-  // v[1] = 720;
-  // v[2] = 0;
+  // v[0] = 32;
+  // v[1] = 32;
+  // v[2] = 1;
 
   ptx_reg_t data;
   data.u32 = v[0];
@@ -6774,78 +6766,128 @@ void load_ray_launch_size_impl(const ptx_instruction *pI, ptx_thread_info *threa
 }
 
 void load_ray_instance_custom_index_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+
+  uint32_t shader_counter;
+  mem->read(&(traversal_data->current_shader_counter), sizeof(traversal_data->current_shader_counter), &shader_counter);
+
+  uint32_t instance_index;
+  if(shader_counter == -1) // not in intersection shader
+    mem->read(&(traversal_data->closest_hit.instance_index), sizeof(traversal_data->closest_hit.instance_index), &instance_index);
+  else {
+
+    warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+    instance_index = table->get_instanceID(shader_counter, thread->get_tid().x, pI, thread);
+  }
+
   assert(pI->get_num_operands() == 1);
   const operand_info &dst = pI->dst();
 
   ptx_reg_t data;
-  data.u32 = thread->RT_thread_data->traversal_data.back().closest_hit.instance_index;
+  data.u32 = instance_index;
   thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
 }
 
 void load_primitive_id_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+
+  uint32_t shader_counter;
+  mem->read(&(traversal_data->current_shader_counter), sizeof(traversal_data->current_shader_counter), &shader_counter);
+
+  uint32_t primitive_index;
+  if(shader_counter == -1) // not in intersection shader
+    mem->read(&(traversal_data->closest_hit.primitive_index), sizeof(traversal_data->closest_hit.primitive_index), &primitive_index);
+  else {
+    warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+    primitive_index = table->get_primitiveID(shader_counter, thread->get_tid().x, pI, thread);
+  }
+
+
   assert(pI->get_num_operands() == 1);
   const operand_info &dst = pI->dst();
 
   ptx_reg_t data;
-  data.u32 = thread->RT_thread_data->traversal_data.back().closest_hit.primitive_index;
+  data.u32 = primitive_index;
   thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
 }
 
 void load_ray_world_to_object_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  assert(pI->get_num_operands() == 4); // TODO: this is loading identity matrix
-  const operand_info &dst0 = pI->dst();
-  const operand_info &dst1 = pI->src1();
-  const operand_info &dst2 = pI->src2();
-  const operand_info &src = pI->src3();
+  assert(pI->get_num_operands() == 2);
+  const operand_info &dst = pI->dst();
+  const operand_info &src = pI->src1();
 
-  ptx_reg_t data[3];
-  ptx_reg_t src_data;
+  ptx_reg_t data, src_data;
 
-  src_data = thread->get_operand_value(src, dst0, F32_TYPE, thread, 1);
+  src_data = thread->get_operand_value(src, dst, U32_TYPE, thread, 1);
 
-  for(int i = 0; i < 3; i++)
-    data[i].f32 = thread->RT_thread_data->traversal_data.back().closest_hit.worldToObjectMatrix.m[src_data.u32][i];
+  data.u64 = (uint64_t)thread->RT_thread_data->traversal_data.back()->closest_hit.worldToObjectMatrix.m[src_data.u32];
 
-  thread->set_operand_value(dst0, data[0], F32_TYPE, thread, pI);
-  thread->set_operand_value(dst1, data[1], F32_TYPE, thread, pI);
-  thread->set_operand_value(dst2, data[2], F32_TYPE, thread, pI);
+  thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
 }
 
 void load_ray_object_to_world_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  assert(pI->get_num_operands() == 4); // TODO: this is loading identity matrix
-  const operand_info &dst0 = pI->dst();
-  const operand_info &dst1 = pI->src1();
-  const operand_info &dst2 = pI->src2();
-  const operand_info &src = pI->src3();
+  assert(pI->get_num_operands() == 2);
+  const operand_info &dst = pI->dst();
+  const operand_info &src = pI->src1();
 
-  ptx_reg_t data[3];
-  ptx_reg_t src_data;
+  ptx_reg_t data, src_data;
 
-  src_data = thread->get_operand_value(src, dst0, U32_TYPE, thread, 1);
+  src_data = thread->get_operand_value(src, dst, U32_TYPE, thread, 1);
 
-  for(int i = 0; i < 3; i++)
-    data[i].f32 = thread->RT_thread_data->traversal_data.back().closest_hit.objectToWorldMatrix.m[src_data.u32][i];;
+  data.u64 = (uint64_t)thread->RT_thread_data->traversal_data.back()->closest_hit.objectToWorldMatrix.m[src_data.u32];
 
-  thread->set_operand_value(dst0, data[0], F32_TYPE, thread, pI);
-  thread->set_operand_value(dst1, data[1], F32_TYPE, thread, pI);
-  thread->set_operand_value(dst2, data[2], F32_TYPE, thread, pI);
+  thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
 }
 
 void load_ray_world_direction_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  assert(pI->get_num_operands() == 3);
-  const operand_info &dst0 = pI->dst();
-  const operand_info &dst1 = pI->src1();
-  const operand_info &dst2 = pI->src2();
+  assert(pI->get_num_operands() == 1);
+  const operand_info &dst = pI->dst();
 
   ptx_reg_t data;
-  data.f32 = thread->RT_thread_data->traversal_data.back().ray_world_direction.x;
+  data.u64 = (uint64_t)(&thread->RT_thread_data->traversal_data.back()->ray_world_direction.x);
+  thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
+}
+
+void load_ray_world_origin_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(pI->get_num_operands() == 1);
+  const operand_info &dst = pI->dst();
+
+  ptx_reg_t data;
+  data.u64 = (uint64_t)(&thread->RT_thread_data->traversal_data.back()->ray_world_origin.x);
+  thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
+}
+
+void load_ray_t_max_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst0 = pI->dst();
+
+  float t_max;
+
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+
+  bool hit_geometry;
+  mem->read(&(traversal_data->hit_geometry), sizeof(traversal_data->hit_geometry), &hit_geometry);
+  if(hit_geometry)
+    mem->read(&(traversal_data->closest_hit.world_min_thit), sizeof(t_max), &t_max);
+  else
+    mem->read(&(traversal_data->Tmax), sizeof(t_max), &t_max);
+
+  ptx_reg_t data;
+  data.f32 = t_max;
   thread->set_operand_value(dst0, data, F32_TYPE, thread, pI);
+}
 
-  data.f32 = thread->RT_thread_data->traversal_data.back().ray_world_direction.y;
-  thread->set_operand_value(dst1, data, F32_TYPE, thread, pI);
+void load_ray_t_min_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
 
-  data.f32 = thread->RT_thread_data->traversal_data.back().ray_world_direction.z;
-  thread->set_operand_value(dst2, data, F32_TYPE, thread, pI);
+  const operand_info &dst0 = pI->dst();
+
+  ptx_reg_t data;
+  mem->read(&(traversal_data->Tmin), sizeof(data.f32), &(data.f32));
+  thread->set_operand_value(dst0, data, F32_TYPE, thread, pI);
 }
 
 void vulkan_resource_index_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -6866,6 +6908,133 @@ void load_vulkan_descriptor_impl(const ptx_instruction *pI, ptx_thread_info *thr
   data.u64 = (uint64_t)(VulkanRayTracing::getDescriptorAddress(src1_data.u32, src2_data.u32));
   thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
 }
+
+void txl_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  TXL_DPRINTF("Functional simulation of txl instruction.\n");
+  
+  ptx_reg_t src0_data, src1_data, src6_data, src7_data, src8_data, data;
+  
+  const operand_info &src0 = pI->operand_lookup(0);
+  src0_data = thread->get_operand_value(src0, src0, U64_TYPE, thread, 1);
+  void* desc = (void*)(src0_data.u64);
+
+  const operand_info &src1 = pI->operand_lookup(1);
+  src1_data = thread->get_operand_value(src1, src1, U64_TYPE, thread, 1);
+  void* sampler = (void*)(src1_data.u64);
+
+  const operand_info &src6 = pI->operand_lookup(6);
+  src6_data = thread->get_operand_value(src6, src6, F32_TYPE, thread, 1);
+  float x = src6_data.f32;
+
+  const operand_info &src7 = pI->operand_lookup(7);
+  src7_data = thread->get_operand_value(src7, src7, F32_TYPE, thread, 1);
+  float y = src7_data.f32;
+
+  const operand_info &src8 = pI->operand_lookup(8);
+  src8_data = thread->get_operand_value(src8, src8, F32_TYPE, thread, 1);
+  float lod = src8_data.f32;
+
+  float c0, c1, c2, c3;
+
+  ptx_reg_t offset_reg;
+  char *workload = getenv("VULKAN_SIM_LAUNCHER_WORKLOAD");
+  if(workload && !strcmp(workload, "raytracing_extended"))
+  {
+    std::string reg_name("%ssa_317_array_index_64");
+    offset_reg = thread->get_reg(reg_name);
+    desc = desc - offset_reg.u64;
+  }
+
+  std::vector<ImageMemoryTransactionRecord> transactions;
+  VulkanRayTracing::getTexture(desc, x, y, lod, c0, c1, c2, c3, transactions, offset_reg.u64);
+
+  const operand_info &dst2 = pI->operand_lookup(2);
+  const operand_info &dst3 = pI->operand_lookup(3);
+  const operand_info &dst4 = pI->operand_lookup(4);
+  const operand_info &dst5 = pI->operand_lookup(5);
+
+  data.f32 = c0;
+  thread->set_operand_value(dst2, data, F32_TYPE, thread, pI);
+
+  data.f32 = c1;
+  thread->set_operand_value(dst3, data, F32_TYPE, thread, pI);
+
+  data.f32 = c2;
+  thread->set_operand_value(dst4, data, F32_TYPE, thread, pI);
+
+  data.f32 = c3;
+  thread->set_operand_value(dst5, data, F32_TYPE, thread, pI);
+
+  TXL_DPRINTF("Setting %d transactions in thread as tex_space\n", transactions.size());
+  thread->set_txl_transactions(transactions);
+  thread->m_last_memory_space = tex_space;
+}
+
+void report_ray_intersection_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t src1_data, src2_data, data;
+
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+  const operand_info &src2 = pI->src2();
+
+  src1_data = thread->get_operand_value(src1, dst, F32_TYPE, thread, 1);
+  float t_hit = src1_data.f32;
+
+  src2_data = thread->get_operand_value(src2, dst, U32_TYPE, thread, 1);
+  uint32_t hit_kind = src2_data.u32;
+
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+
+  float Tmin;
+  mem->read(&(traversal_data->Tmin), sizeof(traversal_data->Tmin), &Tmin);
+
+  bool return_value = false;
+
+  if((Tmin <= t_hit)) {
+    float Tmax;
+    mem->read(&(traversal_data->Tmax), sizeof(traversal_data->Tmax), &Tmax);
+
+    float world_min_thit;
+    mem->read(&(traversal_data->closest_hit.world_min_thit), sizeof(traversal_data->closest_hit.world_min_thit), &world_min_thit);
+
+    bool hit_geometry;
+    mem->read(&(traversal_data->hit_geometry), sizeof(traversal_data->hit_geometry), &hit_geometry);
+
+    if((hit_geometry && t_hit < world_min_thit) || (!hit_geometry && t_hit <= Tmax)) {
+      int32_t shader_counter;
+      mem->read(&(traversal_data->current_shader_counter), sizeof(traversal_data->current_shader_counter), &shader_counter);
+
+      assert(shader_counter != -1);
+      warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+
+      return_value = true;
+
+      hit_geometry = true;
+      mem->write(&(traversal_data->hit_geometry), sizeof(traversal_data->hit_geometry), &hit_geometry, thread, pI);
+
+      VkGeometryTypeKHR geometryType = VK_GEOMETRY_TYPE_AABBS_KHR;
+      mem->write(&(traversal_data->closest_hit.geometryType), sizeof(VkGeometryTypeKHR), &geometryType, thread, pI);
+
+      int32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
+      mem->write(&(traversal_data->closest_hit.hitGroupIndex), sizeof(traversal_data->closest_hit.hitGroupIndex), &hitGroupIndex, thread, pI);
+
+      mem->write(&(traversal_data->closest_hit.world_min_thit), sizeof(traversal_data->closest_hit.world_min_thit), &t_hit, thread, pI);
+
+      uint32_t primitive_index = table->get_primitiveID(shader_counter, thread->get_tid().x, pI, thread);
+      mem->write(&(traversal_data->closest_hit.primitive_index), sizeof(traversal_data->closest_hit.primitive_index), &primitive_index, thread, pI);
+
+      uint32_t instance_index = table->get_instanceID(shader_counter, thread->get_tid().x, pI, thread);
+      mem->write(&(traversal_data->closest_hit.instance_index), sizeof(traversal_data->closest_hit.instance_index), &instance_index, thread, pI);
+    }
+  }
+
+  data.pred =
+      (return_value ==
+       0);  // inverting predicate since ptxplus uses "1" for a set zero flag
+  thread->set_operand_value(dst, data, PRED_TYPE, thread, pI);
+}
+
 
 void deref_var_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
@@ -6889,12 +7058,13 @@ void load_deref_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
-    // {
-    //   printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-    //                                     thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-    //                                     thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-    //   fflush(stdout);
-    // }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
 
   // const operand_info &target = pI->func_addr();
   // const symbol *func_addr = target.get_symbol();
@@ -6983,14 +7153,6 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // ptx_reg_t op15_data = thread->get_operand_value(op15, op15, U64_TYPE, thread, 1);
   // uint32_t payload = op15_data.u64;
 
-  arg++;
-  const operand_info &op16 = pI->operand_lookup(arg);
-  bool run_closest_hit;
-
-  arg++;
-  const operand_info &op17 = pI->operand_lookup(arg);
-  bool run_miss;
-
   // thread->dump_regs(stdout);
 
   VulkanRayTracing::traceRay(_topLevelAS, rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex,
@@ -6999,18 +7161,8 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
                    {directionX, directionY, directionZ},
                    Tmax,
                    NULL,
-                   run_closest_hit,
-                   run_miss,
                    pI,
                    thread);
-  
-  ptx_reg_t data;
-
-  data.u32 = run_closest_hit;
-  thread->set_operand_value(op16, data, PRED_TYPE, thread, pI);
-
-  data.u32 = run_miss;
-  thread->set_operand_value(op17, data, PRED_TYPE, thread, pI);
 }
 
 void end_trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -7058,12 +7210,13 @@ void call_pc_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void call_miss_shader_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
-    // {
-    //   printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-    //                                     thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-    //                                     thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-    //   fflush(stdout);
-    // }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
   
   // const operand_info &dst = pI->dst();
   
@@ -7078,25 +7231,36 @@ void call_miss_shader_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 void call_closest_hit_shader_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
   //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
-    // {
-    //   printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-    //                                     thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-    //                                     thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-    //   fflush(stdout);
-    // }
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
   
   // const operand_info &dst = pI->dst();
   
   VulkanRayTracing::callClosestHitShader(pI, thread);
   // printf("calling closest hit shader\n");
-
-  // ptx_reg_t data;
-  // data.u32 = pc;
-  // thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
 }
 
 void call_intersection_shader_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  VulkanRayTracing::callIntersectionShader(pI, thread);
+  // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
+  //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
+
+  const operand_info &src = pI->operand_lookup(0);
+  ptx_reg_t src_data = thread->get_operand_value(src, src, U32_TYPE, thread, 1);
+  uint32_t shader_counter = src_data.u32;
+
+  VulkanRayTracing::callIntersectionShader(pI, thread, shader_counter);
 }
 
 void call_any_hit_shader_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -7104,14 +7268,13 @@ void call_any_hit_shader_impl(const ptx_instruction *pI, ptx_thread_info *thread
 }
 
 void image_deref_store_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
-  // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
-    // if(thread->get_ctaid().x == 2 && thread->get_ctaid().y == 89 && thread->get_ctaid().z == 0)
-    // {
-    //   printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
-    //                                     thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
-    //                                     thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
-    //   fflush(stdout);
-    // }
+  if(print_debug_insts)
+  {
+    printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                      thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                      thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+    fflush(stdout);
+  }
   int arg = 0;
   const operand_info &op1 = pI->operand_lookup(arg);
   ptx_reg_t op1_data = thread->get_operand_value(op1, op1, B64_TYPE, thread, 1);
@@ -7161,13 +7324,48 @@ void image_deref_store_impl(const ptx_instruction *pI, ptx_thread_info *thread) 
 
   //MRS_TODO: There are more operands
 
-  // if (thread->get_tid().x + thread->get_ctaid().x * 32 == 1024 && thread->get_ctaid().y == 230)
-  // {
-  //   printf("this is where we should break\n");
-  // }
-
   VulkanRayTracing::image_store(image, gl_LaunchIDEXT_X, gl_LaunchIDEXT_Y, gl_LaunchIDEXT_W, gl_LaunchIDEXT_W, 
               hitValue_X, hitValue_Y, hitValue_Z, hitValue_W, pI, thread);
+}
+
+void image_deref_load_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t src0_data, src1_data, src5_data, src6_data, data;
+  
+  const operand_info &src0 = pI->operand_lookup(0);
+  src0_data = thread->get_operand_value(src0, src0, U64_TYPE, thread, 1);
+  void* desc = (void*)(src0_data.u64);
+
+  const operand_info &src5 = pI->operand_lookup(5);
+  src5_data = thread->get_operand_value(src5, src5, U32_TYPE, thread, 1);
+  uint32_t x = src5_data.u32;
+
+  const operand_info &src6 = pI->operand_lookup(6);
+  src6_data = thread->get_operand_value(src6, src6, U32_TYPE, thread, 1);
+  uint32_t y = src6_data.u32;
+
+  //MRS_TODO: There are more operands
+
+  float c0, c1, c2, c3;
+
+  std::vector<ImageMemoryTransactionRecord> transactions;
+  VulkanRayTracing::getTexture(desc, x, y, 0, c0, c1, c2, c3, transactions); // MRS_TODO: x and y are uint
+
+  const operand_info &dst1 = pI->operand_lookup(1);
+  const operand_info &dst2 = pI->operand_lookup(2);
+  const operand_info &dst3 = pI->operand_lookup(3);
+  const operand_info &dst4 = pI->operand_lookup(4);
+
+  data.f32 = c0;
+  thread->set_operand_value(dst1, data, F32_TYPE, thread, pI);
+
+  data.f32 = c1;
+  thread->set_operand_value(dst2, data, F32_TYPE, thread, pI);
+
+  data.f32 = c2;
+  thread->set_operand_value(dst3, data, F32_TYPE, thread, pI);
+
+  data.f32 = c3;
+  thread->set_operand_value(dst4, data, F32_TYPE, thread, pI);
 }
 
 void store_deref_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -7175,6 +7373,15 @@ void store_deref_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 }
 
 void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // if(thread->get_tid().x == 0 && thread->get_tid().y == 0 && thread->get_tid().z == 0)
+  //   if(thread->get_ctaid().x == 0 && thread->get_ctaid().y == 0 && thread->get_ctaid().z == 0)
+    if(print_debug_insts)
+    {
+      printf("########## running line %d of file %s. thread(%d, %d, %d), cta(%d, %d, %d)\n", pI->source_line(), pI->source_file(),
+                                        thread->get_tid().x, thread->get_tid().y, thread->get_tid().z,
+                                        thread->get_ctaid().x, thread->get_ctaid().y, thread->get_ctaid().z);
+      fflush(stdout);
+    }
   assert(pI->get_num_operands() == 3);
   ptx_reg_t src1_data, src2_data, data;
 
@@ -7191,10 +7398,12 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   uint32_t type = src2_data.u32;
   uint64_t address = NULL;
   
+  // printf("########## variable name = %s, size = %d\n", name.c_str(), size);
   variable_decleration_entry* variable_decleration = thread->RT_thread_data->get_variable_decleration_entry(type, name, size);
   if (variable_decleration != NULL) {
     address = variable_decleration->address;
-    assert(variable_decleration->size == size);
+    if(variable_decleration->type != 8192) // MRS_TODO: in raytracing_extended closest hit attribs needs 36 bytes instead of 12 which is wrong
+      assert(variable_decleration->size == size);
     assert (address != NULL);
   } 
   else {
@@ -7204,6 +7413,165 @@ void rt_alloc_mem_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   data.u64 = address;
   thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
 }
+
+void run_intersection_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst = pI->dst();
+  const operand_info &src = pI->src1();
+  ptx_reg_t data, src_data;
+
+  src_data = thread->get_operand_value(src, dst, U32_TYPE, thread, 0);
+  uint32_t shader_counter = src_data.u32;
+
+  warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+  bool intersection_exists = table->shader_exists(thread->get_tid().x, shader_counter, pI, thread);
+
+  data.pred =
+      (intersection_exists ==
+       0);  // inverting predicate since ptxplus uses "1" for a set zero flag
+  
+  thread->set_operand_value(dst, data, PRED_TYPE, thread, pI);
+}
+
+void intersection_exit_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst = pI->dst();
+  const operand_info &src = pI->src1();
+  ptx_reg_t data, src_data;
+
+  src_data = thread->get_operand_value(src, dst, U32_TYPE, thread, 0);
+  uint32_t shader_counter = src_data.u32;
+
+  warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+  bool exit_intersection = table->exit_shaders(shader_counter, thread->get_tid().x);
+
+  data.pred =
+      (exit_intersection ==
+       0);  // inverting predicate since ptxplus uses "1" for a set zero flag
+  
+  thread->set_operand_value(dst, data, PRED_TYPE, thread, pI);
+}
+
+void get_intersection_shader_data_address_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst = pI->dst();
+  const operand_info &src = pI->src1();
+  ptx_reg_t data, src_data;
+
+  src_data = thread->get_operand_value(src, dst, U32_TYPE, thread, 0);
+  uint32_t shader_counter = src_data.u32;
+
+  warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+  void* address = table->get_shader_data_address(shader_counter, thread->get_tid().x);
+
+  data.u64 = (uint64_t)address;
+  
+  thread->set_operand_value(dst, data, B64_TYPE, thread, pI);
+}
+
+void hit_geometry_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst = pI->dst();
+  ptx_reg_t data;
+
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+  bool hit_geometry;
+  mem->read(&(traversal_data->hit_geometry), sizeof(traversal_data->hit_geometry), &hit_geometry);
+
+  data.pred =
+      (hit_geometry ==
+      0);  // inverting predicate since ptxplus uses "1" for a set zero flag
+
+  thread->set_operand_value(dst, data, PRED_TYPE, thread, pI);
+
+}
+
+
+void get_intersection_index_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(0);
+}
+
+void get_hitgroup_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  const operand_info &dst = pI->dst();
+  ptx_reg_t data;
+
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+  mem->read(&(traversal_data->closest_hit.hitGroupIndex), sizeof(data.u32), &(data.u32));
+  
+  thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
+}
+
+void get_warp_hitgroup_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(0);
+  static uint32_t last_counter = 0;
+  static uint32_t last_warp_hitgroup = -1;
+  
+  const operand_info &dst = pI->dst();
+  const operand_info &src = pI->src1();
+  ptx_reg_t data, src_data;
+
+  src_data = thread->get_operand_value(src, dst, U32_TYPE, thread, 0);
+  uint32_t shader_counter = src_data.u32;
+
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+
+  if(shader_counter == last_counter) {
+    data.u32 = last_warp_hitgroup;
+  }
+  else if(shader_counter == last_counter + 1) {
+    last_counter = shader_counter;
+    mem->read(&(traversal_data->closest_hit.hitGroupIndex), sizeof(traversal_data->closest_hit.hitGroupIndex), &last_warp_hitgroup);
+    data.u32 = last_warp_hitgroup;
+  }
+  else
+    assert(0);
+  
+  thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
+}
+
+void get_closest_hit_shaderID_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  static uint32_t last_counter = 0;
+  static uint32_t last_warp_hitgroup = -1;
+  
+  const operand_info &dst = pI->dst();
+  ptx_reg_t data;
+
+  memory_space *mem = thread->get_global_memory();
+  Traversal_data* traversal_data = thread->RT_thread_data->traversal_data.back();
+
+  VkGeometryTypeKHR geometryType;
+  mem->read(&(traversal_data->closest_hit.geometryType), sizeof(traversal_data->closest_hit.geometryType), &geometryType);
+
+  if(geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR)
+    data.u32 = *((uint64_t *)(thread->get_kernel().vulkan_metadata.hit_sbt));
+  else {
+    int32_t hitGroupIndex;
+    mem->read(&(traversal_data->closest_hit.hitGroupIndex), sizeof(traversal_data->closest_hit.hitGroupIndex), &hitGroupIndex);
+
+    data.u32 = *((uint64_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex);
+  }
+  
+  thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
+}
+
+void get_intersection_shaderID_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  static uint32_t last_counter = 0;
+  static uint32_t last_warp_hitgroup = -1;
+
+  const operand_info &dst = pI->dst();
+  const operand_info &src = pI->src1();
+  ptx_reg_t data, src_data;
+
+  src_data = thread->get_operand_value(src, src, U32_TYPE, thread, 1);
+  uint32_t shader_counter = src_data.u32;
+
+  warp_intersection_table* table = VulkanRayTracing::intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+  uint32_t hitGroupIndex = table->get_hitGroupIndex(shader_counter, thread->get_tid().x, pI, thread);
+
+  data.u32 = *((uint64_t *)(thread->get_kernel().vulkan_metadata.hit_sbt) + 8 * hitGroupIndex + 1);
+  
+  thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
+}
+
 
 // wrap_32_4 %ssa_0, %ssa_0_0, %ssa_0_1, %ssa_0_2, %ssa_0_3
 void wrap_32_4_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -7306,4 +7674,35 @@ void set_element_32_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     assert(0);
   
   thread->set_operand_value(dst, data, BB128_TYPE, thread, pI);
+}
+
+void shader_clock_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  unsigned long long clock = thread->get_gpu()->gpu_tot_sim_cycle;
+  
+  ptx_reg_t data;
+
+  data.u32 = clock & ((1ULL << 32) - 1);
+  const operand_info &dst = pI->dst();
+  thread->set_operand_value(dst, data, U32_TYPE, thread, pI);
+
+  data.u32 = clock >> 32;
+  const operand_info &dst2 = pI->operand_lookup(1);
+  thread->set_operand_value(dst2, data, U32_TYPE, thread, pI);
+}
+
+void copysignf_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  assert(pI->get_num_operands() == 2);
+
+  ptx_reg_t src_data, dst_data;
+
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+
+  dst_data = thread->get_operand_value(dst, dst, F32_TYPE, thread, 1);
+  src_data = thread->get_operand_value(src1, dst, F32_TYPE, thread, 1);
+
+  if((src_data.f32 > 0 && dst_data.f32 < 0) || (src_data.f32 < 0 && dst_data.f32 > 0))
+    dst_data.f32 *= 1;
+  
+  thread->set_operand_value(dst, dst_data, F32_TYPE, thread, pI);
 }
