@@ -705,54 +705,105 @@ void gpgpu_sim_wrapper::print_power_kernel_stats(
     double gpu_sim_cycle, double gpu_tot_sim_cycle, double init_value,
     const std::string& kernel_info_string, bool print_trace) {
   detect_print_steady_state(1, init_value);
+  bool power_stats_output_to_stdout = true;
   if (g_power_simulation_enabled) {
-    powerfile << kernel_info_string << std::endl;
+    if (power_stats_output_to_stdout) {
+      std::cout << kernel_info_string << std::endl;
 
-    sanity_check((kernel_power.avg * kernel_sample_count), kernel_tot_power);
-    powerfile << "Kernel Average Power Data:" << std::endl;
-    powerfile << "kernel_avg_power = " << kernel_power.avg << std::endl;
+      sanity_check((kernel_power.avg * kernel_sample_count), kernel_tot_power);
+      std::cout << "Kernel Average Power Data:" << std::endl;
+      std::cout << "kernel_avg_power = " << kernel_power.avg << std::endl;
 
-    for (unsigned i = 0; i < num_pwr_cmps; ++i) {
-      powerfile << "gpu_avg_" << pwr_cmp_label[i] << " = "
-                << kernel_cmp_pwr[i].avg / kernel_sample_count << std::endl;
-    }
-    for (unsigned i = 0; i < num_perf_counters; ++i) {
-      powerfile << "gpu_avg_" << perf_count_label[i] << " = "
-                << kernel_cmp_perf_counters[i].avg / kernel_sample_count
+      for (unsigned i = 0; i < num_pwr_cmps; ++i) {
+        std::cout << "gpu_avg_" << pwr_cmp_label[i] << " = "
+                  << kernel_cmp_pwr[i].avg / kernel_sample_count << std::endl;
+      }
+      for (unsigned i = 0; i < num_perf_counters; ++i) {
+        std::cout << "gpu_avg_" << perf_count_label[i] << " = "
+                  << kernel_cmp_perf_counters[i].avg / kernel_sample_count
+                  << std::endl;
+      }
+
+      std::cout << std::endl << "Kernel Maximum Power Data:" << std::endl;
+      std::cout << "kernel_max_power = " << kernel_power.max << std::endl;
+      for (unsigned i = 0; i < num_pwr_cmps; ++i) {
+        std::cout << "gpu_max_" << pwr_cmp_label[i] << " = "
+                  << kernel_cmp_pwr[i].max << std::endl;
+      }
+      for (unsigned i = 0; i < num_perf_counters; ++i) {
+        std::cout << "gpu_max_" << perf_count_label[i] << " = "
+                  << kernel_cmp_perf_counters[i].max << std::endl;
+      }
+
+      std::cout << std::endl << "Kernel Minimum Power Data:" << std::endl;
+      std::cout << "kernel_min_power = " << kernel_power.min << std::endl;
+      for (unsigned i = 0; i < num_pwr_cmps; ++i) {
+        std::cout << "gpu_min_" << pwr_cmp_label[i] << " = "
+                  << kernel_cmp_pwr[i].min << std::endl;
+      }
+      for (unsigned i = 0; i < num_perf_counters; ++i) {
+        std::cout << "gpu_min_" << perf_count_label[i] << " = "
+                  << kernel_cmp_perf_counters[i].min << std::endl;
+      }
+
+      std::cout << std::endl
+                << "Accumulative Power Statistics Over Previous Kernels:"
                 << std::endl;
+      std::cout << "gpu_tot_avg_power = "
+                << gpu_tot_power.avg / total_sample_count << std::endl;
+      std::cout << "gpu_tot_max_power = " << gpu_tot_power.max << std::endl;
+      std::cout << "gpu_tot_min_power = " << gpu_tot_power.min << std::endl;
+      std::cout << std::endl << std::endl;
     }
+    else {
+      powerfile << kernel_info_string << std::endl;
 
-    powerfile << std::endl << "Kernel Maximum Power Data:" << std::endl;
-    powerfile << "kernel_max_power = " << kernel_power.max << std::endl;
-    for (unsigned i = 0; i < num_pwr_cmps; ++i) {
-      powerfile << "gpu_max_" << pwr_cmp_label[i] << " = "
-                << kernel_cmp_pwr[i].max << std::endl;
-    }
-    for (unsigned i = 0; i < num_perf_counters; ++i) {
-      powerfile << "gpu_max_" << perf_count_label[i] << " = "
-                << kernel_cmp_perf_counters[i].max << std::endl;
-    }
+      sanity_check((kernel_power.avg * kernel_sample_count), kernel_tot_power);
+      powerfile << "Kernel Average Power Data:" << std::endl;
+      powerfile << "kernel_avg_power = " << kernel_power.avg << std::endl;
 
-    powerfile << std::endl << "Kernel Minimum Power Data:" << std::endl;
-    powerfile << "kernel_min_power = " << kernel_power.min << std::endl;
-    for (unsigned i = 0; i < num_pwr_cmps; ++i) {
-      powerfile << "gpu_min_" << pwr_cmp_label[i] << " = "
-                << kernel_cmp_pwr[i].min << std::endl;
-    }
-    for (unsigned i = 0; i < num_perf_counters; ++i) {
-      powerfile << "gpu_min_" << perf_count_label[i] << " = "
-                << kernel_cmp_perf_counters[i].min << std::endl;
-    }
+      for (unsigned i = 0; i < num_pwr_cmps; ++i) {
+        powerfile << "gpu_avg_" << pwr_cmp_label[i] << " = "
+                  << kernel_cmp_pwr[i].avg / kernel_sample_count << std::endl;
+      }
+      for (unsigned i = 0; i < num_perf_counters; ++i) {
+        powerfile << "gpu_avg_" << perf_count_label[i] << " = "
+                  << kernel_cmp_perf_counters[i].avg / kernel_sample_count
+                  << std::endl;
+      }
 
-    powerfile << std::endl
-              << "Accumulative Power Statistics Over Previous Kernels:"
-              << std::endl;
-    powerfile << "gpu_tot_avg_power = "
-              << gpu_tot_power.avg / total_sample_count << std::endl;
-    powerfile << "gpu_tot_max_power = " << gpu_tot_power.max << std::endl;
-    powerfile << "gpu_tot_min_power = " << gpu_tot_power.min << std::endl;
-    powerfile << std::endl << std::endl;
-    powerfile.flush();
+      powerfile << std::endl << "Kernel Maximum Power Data:" << std::endl;
+      powerfile << "kernel_max_power = " << kernel_power.max << std::endl;
+      for (unsigned i = 0; i < num_pwr_cmps; ++i) {
+        powerfile << "gpu_max_" << pwr_cmp_label[i] << " = "
+                  << kernel_cmp_pwr[i].max << std::endl;
+      }
+      for (unsigned i = 0; i < num_perf_counters; ++i) {
+        powerfile << "gpu_max_" << perf_count_label[i] << " = "
+                  << kernel_cmp_perf_counters[i].max << std::endl;
+      }
+
+      powerfile << std::endl << "Kernel Minimum Power Data:" << std::endl;
+      powerfile << "kernel_min_power = " << kernel_power.min << std::endl;
+      for (unsigned i = 0; i < num_pwr_cmps; ++i) {
+        powerfile << "gpu_min_" << pwr_cmp_label[i] << " = "
+                  << kernel_cmp_pwr[i].min << std::endl;
+      }
+      for (unsigned i = 0; i < num_perf_counters; ++i) {
+        powerfile << "gpu_min_" << perf_count_label[i] << " = "
+                  << kernel_cmp_perf_counters[i].min << std::endl;
+      }
+
+      powerfile << std::endl
+                << "Accumulative Power Statistics Over Previous Kernels:"
+                << std::endl;
+      powerfile << "gpu_tot_avg_power = "
+                << gpu_tot_power.avg / total_sample_count << std::endl;
+      powerfile << "gpu_tot_max_power = " << gpu_tot_power.max << std::endl;
+      powerfile << "gpu_tot_min_power = " << gpu_tot_power.min << std::endl;
+      powerfile << std::endl << std::endl;
+      powerfile.flush();
+    }
 
     if (print_trace) {
       print_trace_files();
