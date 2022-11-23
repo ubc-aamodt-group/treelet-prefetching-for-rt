@@ -1404,6 +1404,8 @@ class rt_unit : public pipelined_simd_unit {
         unsigned get_trace_ray_pending_hits() { return trace_ray_pending_hits; }
         unsigned get_unused_prefetch_opportunity() { return unused_prefetch_opportunity; }
         unsigned get_prefetches_issued() { return prefetches_issued; }
+        unsigned get_prefetch_treelet_switches() { return prefetch_treelet_switches; }
+        unsigned get_total_cycles_between_prefetch_treelet_switch() { return total_cycles_between_prefetch_treelet_switch; }
 
         
     protected:
@@ -1487,6 +1489,9 @@ class rt_unit : public pipelined_simd_unit {
 
       // Prefetching
       uint8_t* last_prefetched_treelet = NULL;
+      unsigned prefetch_treelet_switches = 0;
+      unsigned timestamp_of_last_treelet = 0;
+      unsigned total_cycles_between_prefetch_treelet_switch = 0;
       uint8_t* last_rejected_treelet = NULL;
       bool prefetch_opportunity = false;
       std::deque<std::pair<new_addr_type, new_addr_type>> prefetch_mem_access_q; // chunk addr, base addr

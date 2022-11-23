@@ -3506,7 +3506,10 @@ void rt_unit::cycle() {
       if (submit_prefetch && prefetched_treelet_root != nullptr) {
         std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[prefetched_treelet_root];
         if (last_prefetched_treelet != prefetched_treelet_root) { // make sure we arent prefetching the same treelet over and over
-          
+          prefetch_treelet_switches++;
+          total_cycles_between_prefetch_treelet_switch += GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle - timestamp_of_last_treelet;
+          timestamp_of_last_treelet = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+
           int num_prefetch_nodes;
           if (m_config->m_treelet_prefetch_heuristic == 2 || m_config->m_treelet_prefetch_heuristic == 3) {
             num_prefetch_nodes = num_nodes_to_prefetch; // prefetch the tree partially

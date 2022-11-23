@@ -1661,6 +1661,24 @@ void gpgpu_sim::gpu_print_stat() {
     //   prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
     // }
   }
+  fprintf(statfout, "\n");
+
+  fprintf(statfout, "prefetch_treelet_switches: [Clusters 0, ..., N, Total Sum]\n");
+  unsigned total_prefetch_treelet_switches = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetch_treelet_switches());
+    total_prefetch_treelet_switches += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetch_treelet_switches();
+  }
+  fprintf(statfout, "%d\n\n", total_prefetch_treelet_switches);
+
+  fprintf(statfout, "cycles_between_prefetch_treelet_switch: [Clusters 0, ..., N, Total Avg]\n");
+  unsigned total_total_cycles_between_prefetch_treelet_switch = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%f ", double(m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_cycles_between_prefetch_treelet_switch())/double(m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetch_treelet_switches()));
+    total_total_cycles_between_prefetch_treelet_switch += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_cycles_between_prefetch_treelet_switch();
+  }
+  fprintf(statfout, "%f\n\n", double(total_total_cycles_between_prefetch_treelet_switch)/double(total_prefetch_treelet_switches));
+
   fprintf(statfout, "Prefetch Effectiveness per cluster: [Clusters 0, ..., N, Total Sum]\n");
   for (int i = 0; i < 5; i++) {
     for (int j = 0; j < m_config.num_cluster(); j++) {
