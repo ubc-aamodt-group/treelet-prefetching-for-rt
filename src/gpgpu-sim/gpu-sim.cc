@@ -1530,6 +1530,73 @@ void gpgpu_sim::gpu_print_stat() {
   }
   fprintf(statfout, "%d\n\n", trace_ray_total_pending_hits);
 
+  // L1 RT
+  fprintf(statfout, "L1 RT HITS BY PREFETCH: ");
+  unsigned trace_ray_total_l1_hits_by_prefetches = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_hits_by_prefetches);
+    trace_ray_total_l1_hits_by_prefetches += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_hits_by_prefetches;
+  }
+  fprintf(statfout, "%d\n", trace_ray_total_l1_hits_by_prefetches);
+
+  fprintf(statfout, "L1 RT HITS BY DEMAND LOAD: ");
+  unsigned trace_ray_total_l1_hits_by_demand_load = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_hits_by_demand_load);
+    trace_ray_total_l1_hits_by_demand_load += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_hits_by_demand_load;
+  }
+  fprintf(statfout, "%d\n", trace_ray_total_l1_hits_by_demand_load);
+
+  fprintf(statfout, "L1 RT MISSES: ");
+  unsigned trace_ray_total_l1_misses = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_misses);
+    trace_ray_total_l1_misses += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_misses;
+  }
+  fprintf(statfout, "%d\n", trace_ray_total_l1_misses);
+
+  fprintf(statfout, "L1 RT PENDING HITS: ");
+  unsigned trace_ray_total_l1_pending_hits = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_pending_hits);
+    trace_ray_total_l1_pending_hits += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_pending_hits;
+  }
+  fprintf(statfout, "%d\n\n", trace_ray_total_l1_pending_hits);
+
+  // L2 RT
+  fprintf(statfout, "L2 RT HITS BY PREFETCH: ");
+  unsigned trace_ray_total_l2_hits_by_prefetches = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_hits_by_prefetches);
+    trace_ray_total_l2_hits_by_prefetches += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_hits_by_prefetches;
+  }
+  fprintf(statfout, "%d\n", trace_ray_total_l2_hits_by_prefetches);
+
+  fprintf(statfout, "L2 RT HITS BY DEMAND LOAD: ");
+  unsigned trace_ray_total_l2_hits_by_demand_load = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_hits_by_demand_load);
+    trace_ray_total_l2_hits_by_demand_load += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_hits_by_demand_load;
+  }
+  fprintf(statfout, "%d\n", trace_ray_total_l2_hits_by_demand_load);
+
+  fprintf(statfout, "L2 RT MISSES: ");
+  unsigned trace_ray_total_l2_misses = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_misses);
+    trace_ray_total_l2_misses += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_misses;
+  }
+  fprintf(statfout, "%d\n", trace_ray_total_l2_misses);
+
+  fprintf(statfout, "L2 RT PENDING HITS: ");
+  unsigned trace_ray_total_l2_pending_hits = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_pending_hits);
+    trace_ray_total_l2_pending_hits += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_pending_hits;
+  }
+  fprintf(statfout, "%d\n\n", trace_ray_total_l2_pending_hits);
+
+  // Usual output
   std::string kernel_info_str = executed_kernel_info_string();
   fprintf(statfout, "%s", kernel_info_str.c_str());
 

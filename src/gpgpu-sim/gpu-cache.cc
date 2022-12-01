@@ -1912,7 +1912,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   m_stats.inc_stats_pw(mf->get_access_type(), m_stats.select_stats_status(
                                                   probe_status, access_status));
   
-  // Update prefetch metadata after every raytracing mf cache access
+  // Update prefetch metadata after every raytracing mf cache access (L1 Cache)
   if (mf->israytrace() && !mf->isprefetch()) {
     if (m_tag_array->get_m_lines()[cache_index]->get_line_fill_source() == PREFETCH && m_tag_array->get_m_core_id() >= 0 && m_tag_array->get_m_type_id() == 0) {
       std::map<new_addr_type, std::vector<prefetch_block_info>> &prefetch_request_tracker_map = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_tag_array->get_m_core_id()]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
@@ -2012,8 +2012,44 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
     }
   }
 
+  // L2 Cache tracking
+  if (mf->israytrace() && !mf->isprefetch() && m_tag_array->get_m_core_id() >= 0) {
+    if (access_status == HIT) {
+      if (m_tag_array->get_m_lines()[cache_index]->get_line_fill_source() == PREFETCH) {
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_hits_by_prefetches++;
+      }
+      else {
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_hits_by_demand_load++;
+      }
+    }
+    else if (access_status == HIT_RESERVED) {
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_pending_hits++;
+    }
+    else if (access_status == MISS || access_status == SECTOR_MISS) {
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_misses++;
+    }
+  }
+
+  // L2 Cache tracking
+  if (mf->israytrace() && !mf->isprefetch() && m_tag_array->get_m_core_id() < 0) {
+    if (access_status == HIT) {
+      if (m_tag_array->get_m_lines()[cache_index]->get_line_fill_source() == PREFETCH) {
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_hits_by_prefetches++;
+      }
+      else {
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_hits_by_demand_load++;
+      }
+    }
+    else if (access_status == HIT_RESERVED) {
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_pending_hits++;
+    }
+    else if (access_status == MISS || access_status == SECTOR_MISS) {
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_misses++;
+    }
+  }
+
   // Case where prefetch hits in cache (due to demand load or previous prefetch), classify as TOO_LATE
-  if (mf->isprefetch() && access_status == HIT) {
+  if (mf->isprefetch() && access_status == HIT && m_tag_array->get_m_lines()[cache_index]->get_line_fill_source() == DEMAND_LOAD) {
     std::map<new_addr_type, std::vector<prefetch_block_info>> &prefetch_request_tracker_map = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
     bool found = false;
     new_addr_type mshr_addr = m_config.mshr_addr(mf->get_uncoalesced_addr());

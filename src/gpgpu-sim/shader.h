@@ -1397,6 +1397,15 @@ class rt_unit : public pipelined_simd_unit {
         // Prefetching stats
         //std::vector<prefetch_block_info> prefetch_request_tracker;
         std::map<new_addr_type, std::vector<prefetch_block_info>> prefetch_request_tracker; // mshr_addr, list of prefetches belonging to that addr
+        unsigned l1_cache_rt_hits_by_prefetches = 0;
+        unsigned l1_cache_rt_hits_by_demand_load = 0;
+        unsigned l1_cache_rt_misses = 0;
+        unsigned l1_cache_rt_pending_hits = 0;
+
+        unsigned l2_cache_rt_hits_by_prefetches = 0;
+        unsigned l2_cache_rt_hits_by_demand_load = 0;
+        unsigned l2_cache_rt_misses = 0;
+        unsigned l2_cache_rt_pending_hits = 0;
 
         unsigned get_total_cycles_without_dispatching() { return total_cycles_without_dispatching; }
         unsigned get_trace_ray_hits() { return trace_ray_hits; }

@@ -421,6 +421,13 @@ address_type line_size_based_tag_func(new_addr_type address, new_addr_type line_
       fflush(stdout); \
    }
 
+#define RT_SCHEDULER_DEBUG_PRINT 1
+#define RT_SCHEDULER_DPRINTF(...) \
+   if(RT_SCHEDULER_DEBUG_PRINT) { \
+      printf(__VA_ARGS__); \
+      fflush(stdout); \
+   }
+
 // Jin: child kernel information for CDP
 #include "stream_manager.h"
 class stream_manager;

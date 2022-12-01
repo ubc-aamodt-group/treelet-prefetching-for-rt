@@ -4164,53 +4164,78 @@ void rt_unit::schedule_next_warp(warp_inst_t &inst) {
   // Return if there are no warps in the RT unit
   if (m_current_warps.empty()) return;
   
-  else if (m_config->m_treelet_scheduler == 1)
+  else if (m_config->m_treelet_scheduler == 1 && m_config->m_treelet_prefetch == 1) // If the warp has a thread whos access falls in the last_prefetched_treelet, then issue it
   {
-    // Find what is the most popular treelet amongst all warps that arent stalled
-    std::map<uint8_t*, unsigned int> treelet_root_histogram;
-    for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
-      if (!((it->second).is_stalled())) {
-        inst = it->second;
-        for (int i = 0; i < 32; i++) {
-          RTMemoryTransactionRecord access = inst.get_RT_mem_accesses(i).front();
-          uint8_t* treelet_root = VulkanRayTracing::addrToTreeletID((uint8_t*)access.address);
-          treelet_root_histogram[treelet_root]++;
-        }
-      }
-    }
-
-    unsigned int max_val = 0;
-    uint8_t* max_bin = NULL;
-    for (auto bin : treelet_root_histogram) {
-      if (bin.second > max_val) {
-        max_val = bin.second;
-        max_bin = bin.first;
-      }
-    }
-
-    // Go through the warps and pick the first non stalled warps that needs to access that treelet next
+    // Prioritize warps with an access from the most popular treelet. Its saved in rt_unit::last_prefetched_treelet
     bool found = false;
     for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
       if (!((it->second).is_stalled())) { 
-        inst = it->second;
         for (int i = 0; i < 32; i++) {
-          RTMemoryTransactionRecord access = inst.get_RT_mem_accesses(i).front();
-          uint8_t* treelet_root = VulkanRayTracing::addrToTreeletID((uint8_t*)access.address);
-          if (treelet_root == max_bin) {
-            found = true;
-            break;
+          if (!it->second.get_thread_info(i).RT_mem_accesses.empty()) {
+            if (VulkanRayTracing::addrToTreeletID((uint8_t*)(it->second.get_thread_info(i).RT_mem_accesses.front().address)) == last_prefetched_treelet) {
+              inst = it->second;
+              found = true;
+              break;
+            }
           }
         }
-
-        if (found)
+        if (found) {
+          RT_SCHEDULER_DPRINTF("Shader %d: RT scheduler found warp inst %d that matches the current prefetched treelet, Cycle %d\n", m_sid, inst.get_uid(), GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, inst.get_uid());
           break;
+        }
+      }
+    }
+    if (!found) { // if not found, then revert to normal scheduling
+      for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+        if (!((it->second).is_stalled())) { 
+          inst = it->second;
+          RT_SCHEDULER_DPRINTF("Shader %d: RT scheduler reverts to normal scheduling since no warp insts matches the current prefetched treelet, Cycle %d\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+          break;
+        }
       }
     }
     if (!inst.empty()) m_current_warps.erase(inst.get_uid());
-    //TOMMY_DPRINTF("Treelet warp scheduler picked inst uid %d, accesses treelet 0x%x. Most popular treelet is 0x%x with %d accessses\n", inst.get_uid());
+  }
+  else if (m_config->m_treelet_scheduler == 2 && m_config->m_treelet_prefetch == 1) // If the warp with the most threads matching with the last_prefetched_treelet and issue it
+  {
+    // Prioritize warps with an access from the most popular treelet. Its saved in rt_unit::last_prefetched_treelet
+    bool found = false;
+    int max_inst_count = 0;
+    warp_inst_t max_inst;
+    for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+      int current_inst_count = 0;
+      if (!((it->second).is_stalled())) { 
+        for (int i = 0; i < 32; i++) {
+          if (!it->second.get_thread_info(i).RT_mem_accesses.empty()) {
+            if (VulkanRayTracing::addrToTreeletID((uint8_t*)(it->second.get_thread_info(i).RT_mem_accesses.front().address)) == last_prefetched_treelet) {
+              current_inst_count++;
+            }
+          }
+        }
+        if (current_inst_count > max_inst_count) {
+          found = true;
+          max_inst = it->second;
+          max_inst_count = current_inst_count;
+        }
+      }
+    }
+    if (found) {
+      inst = max_inst;
+      RT_SCHEDULER_DPRINTF("Shader %d: RT scheduler found warp inst %d that matches the current prefetched treelet with %d threads, Cycle %d\n", m_sid, inst.get_uid(), max_inst_count, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, inst.get_uid());
+    }
+    else { // if not found, then revert to normal scheduling
+      for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+        if (!((it->second).is_stalled())) { 
+          inst = it->second;
+          RT_SCHEDULER_DPRINTF("Shader %d: RT scheduler reverts to normal scheduling since no warp insts matches the current prefetched treelet, Cycle %d\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+          break;
+        }
+      }
+    }
+    if (!inst.empty()) m_current_warps.erase(inst.get_uid());
   }
 
-  // Otherwise, find the first non-stalled warp
+  // Otherwise, find the first non-stalled warp (treelet_scheduler 0)
   else {
     for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
       if (!((it->second).is_stalled())) { 
