@@ -1710,13 +1710,33 @@ void gpgpu_sim::gpu_print_stat() {
 
   for (unsigned i = 0; i < m_config.num_cluster(); i++) {
     std::map<new_addr_type, std::vector<prefetch_block_info>> prefetch_request_tracker = m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
-    for (auto vec : prefetch_request_tracker) {
-      for (auto prefetch_info : vec.second) {
-        if (prefetch_info.effectiveness == UNCLASSIFIED) {
-          prefetch_info.effectiveness = NEVER_USED;
+    for (auto &vec : prefetch_request_tracker) {
+      // Scan once and see if that address has any entries that were classified which means they were 'accessed' before
+      bool accessed = false;
+      for (auto &info : vec.second) {
+        if (info.effectiveness != UNCLASSIFIED && info.effectiveness != NEVER_USED) {
+          accessed = true;
         }
-        total_prefetch_effectiveness[prefetch_info.effectiveness]++;
-        prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
+      }
+
+      // If it has been accessed before, then label all the ones that weren't classifed as TOO_LATE
+      if (accessed) {
+        for (auto &prefetch_info : vec.second) {
+          if (prefetch_info.effectiveness == UNCLASSIFIED) {
+            prefetch_info.effectiveness = TOO_LATE;
+          }
+          total_prefetch_effectiveness[prefetch_info.effectiveness]++;
+          prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
+        }
+      }
+      else { // If never accessed, then label as NEVER_USED
+        for (auto &prefetch_info : vec.second) {
+          if (prefetch_info.effectiveness == UNCLASSIFIED) {
+            prefetch_info.effectiveness = NEVER_USED;
+          }
+          total_prefetch_effectiveness[prefetch_info.effectiveness]++;
+          prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
+        }
       }
     }
     // std::vector<prefetch_block_info> prefetch_request_tracker = m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
