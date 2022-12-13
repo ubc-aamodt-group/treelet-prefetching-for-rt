@@ -417,6 +417,8 @@ class gpgpu_sim_config : public power_config,
 
   int max_treelet_size;
 
+  bool get_treelet_based_traversal() const { return treelet_based_traversal; }
+
  private:
   void init_clock_domains(void);
 
@@ -436,6 +438,7 @@ class gpgpu_sim_config : public power_config,
   double l2_period;
 
   // GPGPU-Sim timing model options
+  bool treelet_based_traversal;
   bool gpu_intermittent_stats;
   int gpu_intermittent_stats_freq;
   unsigned long long gpu_max_cycle_opt;

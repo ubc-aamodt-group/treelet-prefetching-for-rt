@@ -4061,8 +4061,10 @@ void rt_unit::cycle() {
     m_current_warps.erase(completed_warp_uid);
 
     if (m_config->m_keep_accepting_warps) {
-      int result = sorted_warp_insts.erase(completed_warp_uid);
-      assert(result);
+      if (m_config->m_treelet_sort) {
+        int result = sorted_warp_insts.erase(completed_warp_uid);
+        assert(result);
+      }
     }
   }
 

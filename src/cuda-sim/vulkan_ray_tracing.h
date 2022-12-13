@@ -43,6 +43,7 @@
 #include "compiler/shader_enums.h"
 #include <fstream>
 #include <cmath>
+#include "vulkan_acceleration_structure_util.h"
 
 #define MAX(a,b) (((a)>(b))?(a):(b))
 #define MIN(a,b) (((a)<(b))?(a):(b))
@@ -97,19 +98,6 @@ typedef enum
     WARP_8X4,
 } warp_pixel_mapping;
 
-typedef struct float4x4 {
-  float m[4][4];
-
-  float4 operator*(const float4& _vec) const
-  {
-    float vec[] = {_vec.x, _vec.y, _vec.z, _vec.w};
-    float res[] = {0, 0, 0, 0};
-    for(int i = 0; i < 4; i++)
-        for(int j = 0; j < 4; j++)
-            res[i] += this->m[j][i] * vec[j];
-    return {res[0], res[1], res[2], res[3]};
-  }
-} float4x4;
 
 typedef struct RayDebugGPUData
 {
@@ -161,8 +149,17 @@ typedef struct StackEntry {
     bool topLevel;
     bool leaf;
     int size;
+
+    float worldToObject_tMultiplier;
+    GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
+    float4x4 worldToObjectMatrix;
+    float4x4 objectToWorldMatrix;
+    Ray objectRay;
+
+    StackEntry() {}
     StackEntry(uint8_t* addr, bool topLevel, bool leaf): addr(addr), topLevel(topLevel), leaf(leaf) {}
     StackEntry(uint8_t* addr, bool topLevel, bool leaf, int size): addr(addr), topLevel(topLevel), leaf(leaf), size(size) {}
+    StackEntry(uint8_t* addr, bool topLevel, bool leaf, float worldToObject_tMultiplier, GEN_RT_BVH_INSTANCE_LEAF instanceLeaf, float4x4 worldToObjectMatrix, float4x4 objectToWorldMatrix, Ray objectRay): addr(addr), topLevel(topLevel), leaf(leaf), worldToObject_tMultiplier(worldToObject_tMultiplier), instanceLeaf(instanceLeaf), worldToObjectMatrix(worldToObjectMatrix), objectToWorldMatrix(objectToWorldMatrix), objectRay(objectRay) {}
 
     bool operator<(const StackEntry &o)  const
     {
@@ -255,6 +252,20 @@ private:
 
 public:
     static void traceRay( // called by raygen shader
+                       VkAccelerationStructureKHR _topLevelAS,
+    				   uint rayFlags,
+                       uint cullMask,
+                       uint sbtRecordOffset,
+                       uint sbtRecordStride,
+                       uint missIndex,
+                       float3 origin,
+                       float Tmin,
+                       float3 direction,
+                       float Tmax,
+                       int payload,
+                       const ptx_instruction *pI,
+                       ptx_thread_info *thread);
+    static void traceRayWithTreelets( // called by raygen shader
                        VkAccelerationStructureKHR _topLevelAS,
     				   uint rayFlags,
                        uint cullMask,

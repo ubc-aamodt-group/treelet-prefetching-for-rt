@@ -35,6 +35,20 @@
 #include "vulkan/anv_acceleration_structure.h"
 #include "vulkan/anv_public.h"
 
+typedef struct float4x4 {
+  float m[4][4];
+
+  float4 operator*(const float4& _vec) const
+  {
+    float vec[] = {_vec.x, _vec.y, _vec.z, _vec.w};
+    float res[] = {0, 0, 0, 0};
+    for(int i = 0; i < 4; i++)
+        for(int j = 0; j < 4; j++)
+            res[i] += this->m[j][i] * vec[j];
+    return {res[0], res[1], res[2], res[3]};
+  }
+} float4x4;
+
 static uint8_t *
 get_anv_accel_address(VkAccelerationStructureKHR AS)
 {
@@ -187,7 +201,7 @@ GEN_RT_BVH_INTERNAL_NODE_unpack(struct GEN_RT_BVH_INTERNAL_NODE* dst,
 }
 
 
-float4x4 instance_leaf_matrix_to_float4x4(float* address)
+inline float4x4 instance_leaf_matrix_to_float4x4(float* address)
 {
    float4x4 matrix;
    for(int i = 0; i < 4; i++)
@@ -476,7 +490,7 @@ GEN_RT_BVH_PROCEDURAL_LEAF_unpack(struct GEN_RT_BVH_PROCEDURAL_LEAF* dst,
    return data;
 }
 
-void set_child_bounds(struct GEN_RT_BVH_INTERNAL_NODE *node, int child, float3 *lo, float3 *hi)
+inline void set_child_bounds(struct GEN_RT_BVH_INTERNAL_NODE *node, int child, float3 *lo, float3 *hi)
 {
    lo->x = node->Origin.X + ldexpf(node->ChildLowerXBound[child], node->ChildBoundsExponentX - 8);
    lo->y = node->Origin.Y + ldexpf(node->ChildLowerYBound[child], node->ChildBoundsExponentY - 8);

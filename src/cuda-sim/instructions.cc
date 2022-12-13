@@ -7175,15 +7175,26 @@ void trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   // uint32_t payload = op15_data.u64;
 
   // thread->dump_regs(stdout);
-
-  VulkanRayTracing::traceRay(_topLevelAS, rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex,
-                   {originX, originY, originZ},
-                   Tmin,
-                   {directionX, directionY, directionZ},
-                   Tmax,
-                   NULL,
-                   pI,
-                   thread);
+  if (GPGPU_Context()->the_gpgpusim->g_the_gpu->get_config().get_treelet_based_traversal()) {
+    VulkanRayTracing::traceRayWithTreelets(_topLevelAS, rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex,
+                    {originX, originY, originZ},
+                    Tmin,
+                    {directionX, directionY, directionZ},
+                    Tmax,
+                    NULL,
+                    pI,
+                    thread);
+  }
+  else {
+    VulkanRayTracing::traceRay(_topLevelAS, rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex,
+                    {originX, originY, originZ},
+                    Tmin,
+                    {directionX, directionY, directionZ},
+                    Tmax,
+                    NULL,
+                    pI,
+                    thread);
+  }
 }
 
 void end_trace_ray_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

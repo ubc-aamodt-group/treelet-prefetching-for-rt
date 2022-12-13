@@ -757,6 +757,8 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
   m_shader_config.reg_options(opp);
   m_memory_config.reg_options(opp);
   power_config::reg_options(opp);
+  option_parser_register(opp, "-treelet_based_traversal", OPT_BOOL, &treelet_based_traversal,
+                         "selects which traceRay traversal function to use, 0 = default DFS, 1 = treelet based", "0");
   option_parser_register(opp, "-gpgpu_intermittent_stats", OPT_BOOL, &gpu_intermittent_stats,
                          "print intermittent stats", "0");
   option_parser_register(opp, "-gpgpu_intermittent_stats_freq", OPT_INT64, &gpu_intermittent_stats_freq,
