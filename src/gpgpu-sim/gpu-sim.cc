@@ -414,6 +414,14 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       "flush prefetch queue when theres a new most popular treelet",
       "0");
   option_parser_register(
+      opp, "-prefetch_next_treelet_when_queue_empty", OPT_BOOL, &prefetch_next_treelet_when_queue_empty,
+      "prefetch the next treelet when the prefetch queue is empty",
+      "0");
+  option_parser_register(
+      opp, "-prioritize_prefetches", OPT_BOOL, &prioritize_prefetches,
+      "prioritizes the prefetch queue instead of the mem access q or store q",
+      "0");
+  option_parser_register(
       opp, "-max_prefetch_queue_size", OPT_UINT32, &m_max_prefetch_queue_size,
       "max_prefetch_queue_size",
       "500");

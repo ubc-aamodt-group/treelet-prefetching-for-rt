@@ -3403,6 +3403,7 @@ void rt_unit::cycle() {
 
     if (m_config->m_treelet_prefetch) {
       uint8_t* prefetched_treelet_root = nullptr;
+      uint8_t* second_prefetched_treelet_root = nullptr;
 
       // For each threads's first access, find the most popular treelet
       std::map<uint8_t*, int> treelet_prefetch_priority;
@@ -3501,11 +3502,11 @@ void rt_unit::cycle() {
         num_nodes_to_prefetch = static_cast<int>((static_cast<double>(num_nodes_in_treelet) * percentage) + 0.5); // + 0.5 is for rounding
         submit_prefetch = true;
       }
-
+      
       // Push treelet nodes to prefetch queue
       if (submit_prefetch && prefetched_treelet_root != nullptr) {
         std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[prefetched_treelet_root];
-        if (last_prefetched_treelet != prefetched_treelet_root) { // make sure we arent prefetching the same treelet over and over
+        if (last_prefetched_treelet != prefetched_treelet_root && last_prefetched_second_treelet != prefetched_treelet_root) { // make sure we arent prefetching the same treelet over and over
           prefetch_treelet_switches++;
           total_cycles_between_prefetch_treelet_switch += GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle - timestamp_of_last_treelet;
           timestamp_of_last_treelet = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
@@ -3557,6 +3558,46 @@ void rt_unit::cycle() {
           }
         }
         submit_prefetch = false;
+      }
+
+      // Prefetch the next treelet when the prefetch queue is empty
+      bool submit_second_prefetch = false;
+      if (m_config->prefetch_next_treelet_when_queue_empty) {
+        if (prefetch_mem_access_q.empty() && !m_current_warps.empty() && treelet_prefetch_priority.size() > 1) { // if prefetch queue is empty, but there are still rt warps to be processed
+          if (last_prefetched_treelet == prefetched_treelet_root && prefetched_treelet_root != nullptr) { // if the current prefetched treelet is done prefetching?
+            int max = -1;
+            //unsigned total_threads = 0;
+            //double percentage = 0.0; // prefetch the latter half
+            for (auto treelet_addr : treelet_prefetch_priority) {
+              if (treelet_addr.second > max && treelet_addr.first != last_prefetched_treelet) {
+                second_prefetched_treelet_root = treelet_addr.first;
+                max = treelet_addr.second;
+              }
+              //total_threads += treelet_addr.second;
+            }
+
+            submit_second_prefetch = true;
+          }
+        }
+
+        if (submit_second_prefetch && second_prefetched_treelet_root != nullptr) {
+          if (last_prefetched_second_treelet != second_prefetched_treelet_root) {
+            std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[second_prefetched_treelet_root];
+            for (int j = 0; j < nodes_in_treelet.size(); j++) {
+              SECOND_PREFETCH_DPRINTF("Shader %d: %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+              // Create the memory chunks and push to mem_access_q
+              for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
+                prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+                prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
+                SECOND_PREFETCH_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+              }
+              SECOND_PREFETCH_DPRINTF("\n");
+            }
+            SECOND_PREFETCH_DPRINTF("Shader %d: Prefetch queue entries: %d\n", m_sid, prefetch_mem_access_q.size());
+            last_prefetched_second_treelet = second_prefetched_treelet_root;
+          }
+          submit_second_prefetch = false;
+        }
       }
     }
   }
@@ -3981,11 +4022,20 @@ void rt_unit::cycle() {
     (it->second).track_rt_cycles(false);
   }
 
-  // Schedule next memory request
-  memory_cycle(rt_inst);
+  // Prioritize prefetches
+  prefetch_access = false;
+  if (m_config->m_treelet_prefetch && !prefetch_mem_access_q.empty() && !m_current_warps.empty() && m_config->prioritize_prefetches) {
+    warp_inst_t dummy_rt_inst = m_current_warps.begin()->second;
+    send_prefetch_request(dummy_rt_inst);
+  }
 
-  // Schedule a prefetch request if nothing was sent in memory_cycle
-  if (m_config->m_treelet_prefetch && prefetch_opportunity && !m_current_warps.empty()) {
+  // Schedule next memory request
+  if (prefetch_access == false) {
+    memory_cycle(rt_inst);
+  }
+
+  // Schedule a prefetch request if nothing was sent in memory_cycle (Prioritize demand loads)
+  if (m_config->m_treelet_prefetch && prefetch_opportunity && !m_current_warps.empty() && !m_config->prioritize_prefetches) {
     warp_inst_t dummy_rt_inst = m_current_warps.begin()->second;
     send_prefetch_request(dummy_rt_inst);
   }
@@ -4281,7 +4331,8 @@ void rt_unit::memory_cycle(warp_inst_t &inst) {
     
     // Return if there are no active threads
     if (!inst.active_count()) {
-      prefetch_opportunity = true;
+      if (!m_current_warps.empty())
+        prefetch_opportunity = true;
       return;
     }
 
@@ -4290,7 +4341,8 @@ void rt_unit::memory_cycle(warp_inst_t &inst) {
     
     // If waiting for responses, don't send new requests
     if (!m_config->m_rt_coherence_engine && inst.is_stalled()) {
-      prefetch_opportunity = true;
+      if (!m_current_warps.empty())
+        prefetch_opportunity = true;
       return;
     }
 
@@ -4319,10 +4371,10 @@ void rt_unit::send_prefetch_request(warp_inst_t &inst) {
     }
   }
   else {
+    prefetch_access = false;
     if (!m_current_warps.empty())
       unused_prefetch_opportunity++;
   }
-  prefetch_access = false;
 }
 
 

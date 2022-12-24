@@ -1498,6 +1498,7 @@ class rt_unit : public pipelined_simd_unit {
 
       // Prefetching
       uint8_t* last_prefetched_treelet = NULL;
+      uint8_t* last_prefetched_second_treelet = NULL;
       unsigned prefetch_treelet_switches = 0;
       unsigned timestamp_of_last_treelet = 0;
       unsigned total_cycles_between_prefetch_treelet_switch = 0;
@@ -1951,6 +1952,8 @@ class shader_core_config : public core_config {
   unsigned m_treelet_prefetch_heuristic;
   double m_treelet_prefetch_threshold;
   bool m_flush_prefetch_queue_on_new_treelet;
+  bool prefetch_next_treelet_when_queue_empty;
+  bool prioritize_prefetches;
   unsigned m_treelet_scheduler;
   bool m_keep_accepting_warps;
   bool m_pipelined_treelet_queue;

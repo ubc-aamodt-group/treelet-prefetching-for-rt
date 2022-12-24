@@ -421,9 +421,16 @@ address_type line_size_based_tag_func(new_addr_type address, new_addr_type line_
       fflush(stdout); \
    }
 
-#define RT_SCHEDULER_DEBUG_PRINT 1
+#define RT_SCHEDULER_DEBUG_PRINT 0
 #define RT_SCHEDULER_DPRINTF(...) \
    if(RT_SCHEDULER_DEBUG_PRINT) { \
+      printf(__VA_ARGS__); \
+      fflush(stdout); \
+   }
+
+#define SECOND_PREFETCH_DEBUG_PRINT 0
+#define SECOND_PREFETCH_DPRINTF(...) \
+   if(SECOND_PREFETCH_DEBUG_PRINT) { \
       printf(__VA_ARGS__); \
       fflush(stdout); \
    }

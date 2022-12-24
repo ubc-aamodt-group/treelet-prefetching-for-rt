@@ -833,18 +833,22 @@ void warp_inst_t::completed(unsigned long long cycle) const {
 
 void warp_inst_t::print_rt_accesses() {
   for (unsigned i=0; i<m_config->warp_size; i++) {
-    RT_DPRINTF("Thread %d: ", i);
-    for (auto it=m_per_scalar_thread[i].RT_mem_accesses.begin(); it!=m_per_scalar_thread[i].RT_mem_accesses.end(); it++) {
-      RT_DPRINTF("0x%x\t", it->address);
+    if (m_per_scalar_thread.size()) {
+      RT_DPRINTF("Thread %d: ", i);
+      for (auto it=m_per_scalar_thread[i].RT_mem_accesses.begin(); it!=m_per_scalar_thread[i].RT_mem_accesses.end(); it++) {
+        RT_DPRINTF("0x%x\t", it->address);
+      }
+      RT_DPRINTF("\n");
     }
-    RT_DPRINTF("\n");
   }
 }
 
 void warp_inst_t::print_intersection_delay() {
   RT_DPRINTF("Intersection Delays: [");
   for (unsigned i=0; i<m_config->warp_size; i++) {
-    RT_DPRINTF("%d\t", m_per_scalar_thread[i].intersection_delay);
+    if (m_per_scalar_thread.size()) {
+      RT_DPRINTF("%d\t", m_per_scalar_thread[i].intersection_delay);
+    }
   }
   RT_DPRINTF("\n");
 }
@@ -1128,6 +1132,9 @@ bool warp_inst_t::process_returned_mem_access(const mem_fetch *mf, unsigned tid)
 
 bool warp_inst_t::process_returned_mem_access(bool &mem_record_done, unsigned tid, new_addr_type addr, new_addr_type uncoalesced_base_addr) {
   bool thread_found = false;
+  if (m_per_scalar_thread.empty()) {
+    return thread_found;
+  }
   if (!m_per_scalar_thread[tid].RT_mem_accesses.empty()) {
     RTMemoryTransactionRecord &mem_record = m_per_scalar_thread[tid].RT_mem_accesses.front();
     new_addr_type thread_addr = mem_record.address;
