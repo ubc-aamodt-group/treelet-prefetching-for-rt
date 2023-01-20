@@ -66,6 +66,7 @@
 #include "power_stat.h"
 #include "stats.h"
 #include "visualizer.h"
+#include "../cuda-sim/vulkan_ray_tracing.h"
 
 #ifdef GPGPUSIM_POWER_MODEL
 #include "power_interface.h"
@@ -1803,7 +1804,73 @@ void gpgpu_sim::gpu_print_stat() {
 
   fprintf(statfout, "\n");
 
+  fprintf(statfout, "Prefetches Added: [Clusters 0, ..., N, Total Sum]\n");
+  unsigned total_prefetches_added = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetches_added_to_queue());
+    total_prefetches_added += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetches_added_to_queue();
+  }
+  fprintf(statfout, "%d\n", total_prefetches_added);
 
+  fprintf(statfout, "\n");
+
+  fprintf(statfout, "Prefetches Removed: [Clusters 0, ..., N, Total Sum]\n");
+  unsigned total_prefetches_removed = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetches_removed_from_queue());
+    total_prefetches_removed += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetches_removed_from_queue();
+  }
+  fprintf(statfout, "%d\n", total_prefetches_removed);
+
+  fprintf(statfout, "\n");
+  
+  fprintf(statfout, "Prefetches Readded: [Clusters 0, ..., N, Total Sum]\n");
+  unsigned total_prefetches_readded = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetches_readded_to_queue());
+    total_prefetches_readded += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetches_readded_to_queue();
+  }
+  fprintf(statfout, "%d\n", total_prefetches_readded);
+
+  fprintf(statfout, "\n");
+
+  // Print out the whole treelet structure whether or not the nodes are accessed
+  fprintf(statfout, "Treelet Structure\n");
+  for (auto treelet : VulkanRayTracing::treelet_roots_addr_only) { //treelet_addr_only_child_map
+    if (treelet.second.size() == 0) {
+      fprintf(statfout, "0x%x : 0x%x\n", treelet.first, treelet.first);
+    }
+    else {
+      for (auto child : treelet.second) {
+        fprintf(statfout, "0x%x : 0x%x\n", child.addr, treelet.first);
+      }
+    }
+  }
+  fprintf(statfout, "\n");
+
+  // Print what treelet root each node belongs too
+  fprintf(statfout, "Treelet children and roots\n");
+  for (auto node : treelet_root_and_children) {
+    fprintf(statfout, "0x%x : 0x%x\n", node.first, node.second);
+  }
+  fprintf(statfout, "\n");
+
+  // Printing the tracker maps
+  fprintf(statfout, "Global ray node tracker\n");
+  for (auto node : global_ray_node_tracker) {
+    fprintf(statfout, "0x%x : %d\n", node.first, node.second);
+  }
+  fprintf(statfout, "\n");
+
+  fprintf(statfout, "Clustered ray node tracker (grouped by CTAID/warpid)\n");
+  for (auto cta : ray_node_tracker) {
+    fprintf(statfout, "CTA/Warp %d\n", cta.first);
+    for (auto node : cta.second) {
+      fprintf(statfout, "0x%x : %d\n", node.first, node.second);
+    }
+  }
+  fprintf(statfout, "\n");
+  
   shader_print_cache_stats(statfout);
   fflush(statfout);
 

@@ -349,6 +349,7 @@ public:
                                        uint32_t row_pitch_B,
                                        uint32_t filter);
     static void pass_child_addr(void *address);
+    static void parentPointerPass(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset);
     static void createTreelets(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet);
     static float calculateSAH(float3 lo, float3 hi);
     static bool isTreeletRoot(StackEntry node);

@@ -3536,6 +3536,7 @@ void rt_unit::cycle() {
                   prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
                   prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
                   TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+                  prefetches_added_to_queue++;
                 }
                 TOMMY_DPRINTF("\n");
               }
@@ -3548,6 +3549,7 @@ void rt_unit::cycle() {
                   prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
                   prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
                   TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+                  prefetches_added_to_queue++;
                 }
                 TOMMY_DPRINTF("\n");
               }
@@ -3590,6 +3592,7 @@ void rt_unit::cycle() {
                 prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
                 prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
                 SECOND_PREFETCH_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+                prefetches_added_to_queue++;
               }
               SECOND_PREFETCH_DPRINTF("\n");
             }
@@ -4532,6 +4535,7 @@ mem_fetch* rt_unit::process_memory_chunks(warp_inst_t &inst) {
         prefetch_mem_access_q.erase(prefetch_mem_access_q.begin() + idx);
         prefetch_generation_cycles.erase(prefetch_generation_cycles.begin() + idx);
         TOMMY_DPRINTF("Shader %d: Removing address 0x%x from prefetch queue due to demand load\n", m_sid, next_addr);
+        prefetches_removed_from_queue++;
       }
     }
   }
@@ -4604,6 +4608,7 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
         prefetch_mem_access_q.erase(prefetch_mem_access_q.begin() + idx);
         prefetch_generation_cycles.erase(prefetch_generation_cycles.begin() + idx);
         TOMMY_DPRINTF("Shader %d: Removing address 0x%x from prefetch queue due to demand load\n", m_sid, next_addr);
+        prefetches_removed_from_queue++;
       }
     }
   }
@@ -4718,6 +4723,22 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
     else if (status == HIT_RESERVED)
       trace_ray_pending_hits++;
   }
+
+  // Classify the rays to see if theres any clustering
+  if (status != RESERVATION_FAIL) {
+    if (mf->get_uncoalesced_addr() == mf->get_uncoalesced_base_addr() && !mf->is_write()) {
+      std::map<unsigned, std::map<new_addr_type, unsigned>> &ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->ray_node_tracker;
+      unsigned ctaid = m_core->get_cta_id(inst.get_warp_id());
+      ray_node_tracker[ctaid][mf->get_uncoalesced_base_addr()]++;
+
+      std::map<new_addr_type, unsigned> &global_ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->global_ray_node_tracker;
+      global_ray_node_tracker[mf->get_uncoalesced_base_addr()]++;
+
+      std::map<new_addr_type, new_addr_type> &treelet_root_and_children = GPGPU_Context()->the_gpgpusim->g_the_gpu->treelet_root_and_children;
+      new_addr_type root_addr = (new_addr_type) VulkanRayTracing::addrToTreeletID((uint8_t*)mf->get_uncoalesced_base_addr());
+      treelet_root_and_children[mf->get_uncoalesced_base_addr()] = root_addr;
+    }
+  }
   
   new_addr_type addr = mf->get_addr();
   new_addr_type base_addr = mf->get_uncoalesced_base_addr();
@@ -4747,6 +4768,7 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
           prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
           prefetch_generation_cycles.push_front(std::make_pair(mf->get_prefetch_generation_cycle(), mf->get_uncoalesced_addr()));
           prefetch_request_tracker[cache->get_cache_config().mshr_addr(mf->get_uncoalesced_addr())].pop_back();
+          prefetches_readded_to_queue++;
         }
         else {
           if (mem_chunk) {
@@ -4766,6 +4788,7 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
         prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
         prefetch_generation_cycles.push_front(std::make_pair(mf->get_prefetch_generation_cycle(), mf->get_uncoalesced_addr()));
         prefetch_request_tracker[cache->get_cache_config().mshr_addr(mf->get_uncoalesced_addr())].pop_back();
+        prefetches_readded_to_queue++;
       }
       else {
         if (mem_chunk) {

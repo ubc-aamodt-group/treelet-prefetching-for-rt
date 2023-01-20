@@ -1415,7 +1415,9 @@ class rt_unit : public pipelined_simd_unit {
         unsigned get_prefetches_issued() { return prefetches_issued; }
         unsigned get_prefetch_treelet_switches() { return prefetch_treelet_switches; }
         unsigned get_total_cycles_between_prefetch_treelet_switch() { return total_cycles_between_prefetch_treelet_switch; }
-
+        unsigned get_prefetches_added_to_queue() { return prefetches_added_to_queue; }
+        unsigned get_prefetches_removed_from_queue() { return prefetches_removed_from_queue; }
+        unsigned get_prefetches_readded_to_queue() { return prefetches_readded_to_queue; }
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -1509,6 +1511,9 @@ class rt_unit : public pipelined_simd_unit {
       bool prefetch_access = false;
       unsigned unused_prefetch_opportunity = 0;
       unsigned prefetches_issued = 0;
+      unsigned prefetches_added_to_queue = 0;
+      unsigned prefetches_removed_from_queue = 0;
+      unsigned prefetches_readded_to_queue = 0;
 };
 
 class ldst_unit : public pipelined_simd_unit {

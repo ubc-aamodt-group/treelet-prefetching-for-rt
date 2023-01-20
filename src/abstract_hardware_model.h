@@ -872,6 +872,10 @@ class gpgpu_t {
   std::vector<unsigned long long> issue_cycles;
   std::vector<unsigned long long> writeback_cycles;
 
+  std::map<unsigned, std::map<new_addr_type, unsigned>> ray_node_tracker;
+  std::map<new_addr_type, unsigned> global_ray_node_tracker;
+  std::map<new_addr_type, new_addr_type> treelet_root_and_children;
+
   unsigned mshr_rt_merges = 0;
   unsigned mshr_all_merges = 0;
   std::map<new_addr_type, unsigned> block_addr_merge_tracker;
