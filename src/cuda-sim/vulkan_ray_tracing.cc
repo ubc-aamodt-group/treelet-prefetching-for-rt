@@ -112,6 +112,12 @@ std::map<StackEntry, std::vector<StackEntry>> VulkanRayTracing::treelet_child_ma
 std::map<uint8_t*, std::vector<StackEntry>> VulkanRayTracing::treelet_addr_only_child_map;
 std::map<uint8_t*, uint8_t*> VulkanRayTracing::node_map_addr_only;
 
+std::map<uint8_t*, StackEntry> VulkanRayTracing::parent_map; // map <node, it's parent>
+std::map<uint8_t*, StackEntry> VulkanRayTracing::node_info; // map <node, it's info>
+std::map<uint8_t*, StackEntry> VulkanRayTracing::parent_map_device_offset; // map <node device address, it's parent's device address + info>
+std::map<uint8_t*, StackEntry> VulkanRayTracing::node_info_device_offset; // map <node device address, it's info>
+
+
 bool use_external_launcher = true;
 
 bool VulkanRayTracing::_init_ = false;
@@ -636,7 +642,18 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
             assert(0);
         }
     }
+
+    VulkanRayTracing::parent_map = parent_map;
+    VulkanRayTracing::node_info = node_info;
+    VulkanRayTracing::parent_map_device_offset = parent_map_device_offset;
+    VulkanRayTracing::node_info_device_offset = node_info_device_offset;
+
     std::cout << "Parent Pointer Pass Done" << std::endl;
+
+    // for (auto node : node_info)
+    // {
+    //     printf("Node: 0x%x Parent: 0x%x Size: %d\n", node.first, parent_map[node.first].addr, node.second.size);
+    // }
 }
 
 

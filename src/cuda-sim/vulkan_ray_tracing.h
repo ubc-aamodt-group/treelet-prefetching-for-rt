@@ -242,6 +242,12 @@ public:
     static std::map<uint8_t*, std::vector<StackEntry>> treelet_addr_only_child_map; // Key: a treelet root node address; Value: vector of child treelets of this treelet node
     static std::map<uint8_t*, uint8_t*> node_map_addr_only;
 
+    static std::map<uint8_t*, StackEntry> parent_map; // map <node, it's parent>
+    static std::map<uint8_t*, StackEntry> node_info; // map <node, it's info>
+    static std::map<uint8_t*, StackEntry> parent_map_device_offset; // map <node device address, it's parent's device address + info>
+    static std::map<uint8_t*, StackEntry> node_info_device_offset; // map <node device address, it's info>
+
+
 private:
     static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
     static float3 Barycentric(float3 p, float3 a, float3 b, float3 c);
