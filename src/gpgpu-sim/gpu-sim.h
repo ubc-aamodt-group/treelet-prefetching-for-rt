@@ -419,6 +419,8 @@ class gpgpu_sim_config : public power_config,
 
   bool get_treelet_based_traversal() const { return treelet_based_traversal; }
 
+  unsigned maxConcurrentRays;
+
  private:
   void init_clock_domains(void);
 

@@ -243,10 +243,13 @@ public:
     static std::map<uint8_t*, uint8_t*> node_map_addr_only;
 
     static std::map<uint8_t*, StackEntry> parent_map; // map <node, it's parent>
+    static std::map<uint8_t*, std::vector<StackEntry>> children_map; // map <node, it's children>
     static std::map<uint8_t*, StackEntry> node_info; // map <node, it's info>
     static std::map<uint8_t*, StackEntry> parent_map_device_offset; // map <node device address, it's parent's device address + info>
     static std::map<uint8_t*, StackEntry> node_info_device_offset; // map <node device address, it's info>
+    static std::deque<std::pair<StackEntry, int>> reverse_stack; // BVH nodes in reverse order for bottom up treelet formation
 
+    static unsigned accessedDataSize;
 
 private:
     static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
@@ -357,6 +360,7 @@ public:
     static void pass_child_addr(void *address);
     static void parentPointerPass(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset);
     static void createTreelets(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet);
+    static void createTreeletsBottomUp(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet);
     static float calculateSAH(float3 lo, float3 hi);
     static bool isTreeletRoot(StackEntry node);
     static bool isTreeletRoot(uint8_t* addr);

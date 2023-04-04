@@ -334,7 +334,7 @@ struct Ray
 {
 	float4 origin_tmin;
 	float4 dir_tmax;
-
+  unsigned rayid;
 	bool anyhit;
 
   float3 get_origin() const { return {origin_tmin.x, origin_tmin.y, origin_tmin.z}; }
@@ -355,7 +355,7 @@ struct Ray
     return {origin_tmin.x + dir_tmax.x * t, origin_tmin.y + dir_tmax.y * t, origin_tmin.z + dir_tmax.z * t};
   }
 
-  void make_ray(float3 o, float3 d, float t_min, float t_max)
+  void make_ray(float3 o, float3 d, float t_min, float t_max, unsigned ray_id = 0)
   {
     origin_tmin.x = o.x;
     origin_tmin.y = o.y;
@@ -365,6 +365,7 @@ struct Ray
     dir_tmax.y = d.y;
     dir_tmax.z = d.z;
     dir_tmax.w = t_max;
+    rayid = ray_id;
   }
 };
 
@@ -875,6 +876,9 @@ class gpgpu_t {
   std::map<unsigned, std::map<new_addr_type, unsigned>> ray_node_tracker;
   std::map<new_addr_type, unsigned> global_ray_node_tracker;
   std::map<new_addr_type, new_addr_type> treelet_root_and_children;
+
+  std::map <new_addr_type, unsigned> treeletIDToRayIDMap;
+  std::map <new_addr_type, std::map <unsigned, unsigned>> per_treelet_difference_histogram;
 
   unsigned mshr_rt_merges = 0;
   unsigned mshr_all_merges = 0;

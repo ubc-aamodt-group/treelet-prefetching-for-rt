@@ -113,9 +113,11 @@ std::map<uint8_t*, std::vector<StackEntry>> VulkanRayTracing::treelet_addr_only_
 std::map<uint8_t*, uint8_t*> VulkanRayTracing::node_map_addr_only;
 
 std::map<uint8_t*, StackEntry> VulkanRayTracing::parent_map; // map <node, it's parent>
+std::map<uint8_t*, std::vector<StackEntry>> VulkanRayTracing::children_map; // map <node, it's children>
 std::map<uint8_t*, StackEntry> VulkanRayTracing::node_info; // map <node, it's info>
 std::map<uint8_t*, StackEntry> VulkanRayTracing::parent_map_device_offset; // map <node device address, it's parent's device address + info>
 std::map<uint8_t*, StackEntry> VulkanRayTracing::node_info_device_offset; // map <node device address, it's info>
+std::deque<std::pair<StackEntry, int>> VulkanRayTracing::reverse_stack; // BVH nodes in reverse order for bottom up treelet formation
 
 
 bool use_external_launcher = true;
@@ -511,6 +513,9 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
     std::map<uint8_t*, StackEntry> node_info_device_offset; // map <node device address, it's info>
 
     std::deque<StackEntry> stack;
+    std::deque<std::pair<StackEntry, int>> reverse_stack; // Stack entry, tree level: stores nodes in reverse order
+
+    int tree_level = 0;
 
     GEN_RT_BVH topBVH; //TODO: test hit with world before traversal
     GEN_RT_BVH_unpack(&topBVH, (uint8_t*)_topLevelAS);
@@ -518,6 +523,9 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
     node_info[(uint8_t*)_topLevelAS] = StackEntry((uint8_t*)_topLevelAS, true, false, GEN_RT_BVH_length * 4);
     parent_map_device_offset[(uint8_t*)_topLevelAS + device_offset] = StackEntry(nullptr, false, false, 0); // root node has no parent
     node_info_device_offset[(uint8_t*)_topLevelAS + device_offset] = StackEntry((uint8_t*)_topLevelAS + device_offset, true, false, GEN_RT_BVH_length * 4);
+    reverse_stack.push_front(std::make_pair(parent_map[(uint8_t*)_topLevelAS], tree_level));
+
+    tree_level++;
 
     uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
     stack.push_back(StackEntry(topRootAddr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
@@ -525,6 +533,7 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
     node_info[topRootAddr] = StackEntry(topRootAddr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
     parent_map_device_offset[topRootAddr + device_offset] = StackEntry((uint8_t*)_topLevelAS + device_offset, true, false, GEN_RT_BVH_length * 4);
     node_info_device_offset[topRootAddr + device_offset] = StackEntry(topRootAddr + device_offset, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+    reverse_stack.push_front(std::make_pair(parent_map[topRootAddr], tree_level));
 
     StackEntry current_node;
     
@@ -537,6 +546,8 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
         {
             struct GEN_RT_BVH_INTERNAL_NODE node;
             GEN_RT_BVH_INTERNAL_NODE_unpack(&node, current_node.addr);
+
+            tree_level++;
 
             uint8_t *child_addr = current_node.addr + (node.ChildOffset * 64);
             for(int i = 0; i < 6; i++)
@@ -552,6 +563,7 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
                         node_info[child_addr] = StackEntry(current_node.addr, true, true, GEN_RT_BVH_INSTANCE_LEAF_length * 4);
                         parent_map_device_offset[child_addr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
                         node_info_device_offset[child_addr + device_offset] = StackEntry(child_addr + device_offset, true, true, GEN_RT_BVH_INSTANCE_LEAF_length * 4);
+                        reverse_stack.push_front(std::make_pair(parent_map[child_addr], tree_level));
                     }
                     else
                     {
@@ -561,6 +573,7 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
                         node_info[child_addr] = StackEntry(child_addr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
                         parent_map_device_offset[child_addr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
                         node_info_device_offset[child_addr + device_offset] = StackEntry(child_addr + device_offset, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+                        reverse_stack.push_front(std::make_pair(parent_map[child_addr], tree_level));
                     }
                 }
                 child_addr += node.ChildSize[i] * 64;
@@ -577,14 +590,23 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
             GEN_RT_BVH botLevelASAddr;
             GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
 
+            tree_level++;
+
             uint8_t * botLevelRootAddr;
             botLevelRootAddr = ((uint8_t *)((uint64_t)leaf_addr + instanceLeaf.BVHAddress)) + botLevelASAddr.RootNodeOffset;
             stack.push_front(StackEntry(botLevelRootAddr, false, false));
+            parent_map[botLevelRootAddr] =StackEntry(current_node.addr, current_node.topLevel, current_node.leaf, current_node.size);
+            node_info[botLevelRootAddr] = StackEntry(botLevelRootAddr, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+            parent_map_device_offset[botLevelRootAddr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
+            node_info_device_offset[botLevelRootAddr + device_offset] = StackEntry(botLevelRootAddr + device_offset, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+            reverse_stack.push_front(std::make_pair(parent_map[botLevelRootAddr], tree_level));
         }
         else if (!current_node.topLevel && !current_node.leaf) // Bottom level internal node
         {
             struct GEN_RT_BVH_INTERNAL_NODE node;
             GEN_RT_BVH_INTERNAL_NODE_unpack(&node, current_node.addr);
+
+            tree_level++;
 
             uint8_t *child_addr = current_node.addr + (node.ChildOffset * 64);
             for(int i = 0; i < 6; i++)
@@ -600,6 +622,7 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
                         node_info[child_addr] = StackEntry(child_addr, false, true, GEN_RT_BVH_length * 4);
                         parent_map_device_offset[child_addr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
                         node_info_device_offset[child_addr + device_offset] = StackEntry(child_addr + device_offset, false, true, GEN_RT_BVH_length * 4);
+                        reverse_stack.push_front(std::make_pair(parent_map[child_addr], tree_level));
                     }
                     else
                     {
@@ -609,6 +632,7 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
                         node_info[child_addr] = StackEntry(child_addr, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
                         parent_map_device_offset[child_addr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
                         node_info_device_offset[child_addr + device_offset] = StackEntry(child_addr + device_offset, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+                        reverse_stack.push_front(std::make_pair(parent_map[child_addr], tree_level));
                     }
                 }
                 child_addr += node.ChildSize[i] * 64;
@@ -643,12 +667,25 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
         }
     }
 
+
+    // Build a map to query a list of child nodes given a parent node
+    std::map<uint8_t*, std::vector<StackEntry>> children_map;
+    for (auto node : parent_map)
+    {
+        if (node.second.addr != 0)
+        {
+            children_map[node.second.addr].push_back(node_info[node.first]);
+        }
+    }
+
     VulkanRayTracing::parent_map = parent_map;
+    VulkanRayTracing::children_map = children_map;
     VulkanRayTracing::node_info = node_info;
     VulkanRayTracing::parent_map_device_offset = parent_map_device_offset;
     VulkanRayTracing::node_info_device_offset = node_info_device_offset;
+    VulkanRayTracing::reverse_stack = reverse_stack;
 
-    std::cout << "Parent Pointer Pass Done" << std::endl;
+    std::cout << "Parent Pointer Pass  and Reverse Stack Done" << std::endl;
 
     // for (auto node : node_info)
     // {
@@ -657,10 +694,119 @@ void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS,
 }
 
 
-// void VulkanRayTracing::createTreeletsBottomUp(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet)
-// {
-    
-// }
+void VulkanRayTracing::createTreeletsBottomUp(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet)
+{
+    int remaining_bytes = maxBytesPerTreelet;
+    std::map<StackEntry, std::vector<StackEntry>> completed_treelet_roots; // <address, list of nodes in treelet>
+
+    StackEntry current_treelet_root;
+
+    while (!reverse_stack.empty())
+    {
+        StackEntry current_node = reverse_stack.front().first;
+        int current_tree_level = reverse_stack.front().second;
+        reverse_stack.pop_front();
+
+        bool keep_searching = true;
+        std::vector<StackEntry> nodes_in_current_treelet;
+        if (remaining_bytes >= current_node.size)
+        {
+            // Subtract current node size from remaining bytes
+            remaining_bytes -= current_node.size;
+            nodes_in_current_treelet.push_back(current_node);
+
+            // Set current_node as the temporary treelet root
+            current_treelet_root = current_node;
+        }
+        else
+        {
+            // Current treelet is full, add it to the list of completed treelets
+            completed_treelet_roots[current_treelet_root] = nodes_in_current_treelet;
+            keep_searching = false;
+            remaining_bytes = maxBytesPerTreelet;
+        }
+
+        // Check parent of current_node
+        while (remaining_bytes >= 0 && keep_searching)
+        {
+            // Check if current_node has a parent node
+            StackEntry parent_node = parent_map[current_node.addr];
+            if (parent_node.addr != nullptr)
+            {
+                int parent_node_size = parent_node.size;
+                int children_sizes = 0;
+
+                for (auto child : children_map[parent_node.addr])
+                {
+                    if (child.addr != current_node.addr) // find the size of all children except the current node since the current node is already accounted for above
+                        children_sizes += child.size;
+                }
+
+                if (remaining_bytes >= (parent_node_size + children_sizes))
+                {
+                    // Subtract parent node size from remaining bytes
+                    remaining_bytes -= (parent_node_size + children_sizes);
+                
+                    // Set current_node as the new temporary treelet root
+                    current_treelet_root = parent_node;
+
+                    // Add nodes to the current treelet
+                    nodes_in_current_treelet.push_back(parent_node);
+                    for (auto child : children_map[parent_node.addr])
+                    {
+                        if (child.addr != current_node.addr)
+                            nodes_in_current_treelet.push_back(child);
+                    }
+
+                    // Remove the other children and the parent node from the stack
+                    for (auto it = reverse_stack.begin(); it != reverse_stack.end(); it++)
+                    {
+                        if (it->first.addr == parent_node.addr)
+                        {
+                            reverse_stack.erase(it);
+                            break;
+                        }
+                    }
+
+                    for (auto child : children_map[parent_node.addr])
+                    {
+                        for (auto it = reverse_stack.begin(); it != reverse_stack.end(); it++)
+                        {
+                            if (it->first.addr == child.addr)
+                            {
+                                reverse_stack.erase(it);
+                                break;
+                            }
+                        }
+                    }
+
+                    // Set current_node to the parent node
+                    current_node = parent_node;
+                }
+                else
+                {
+                    // Current treelet is full, add it to the list of completed treelets
+                    completed_treelet_roots[current_treelet_root] = nodes_in_current_treelet;
+                    keep_searching = false;
+                    remaining_bytes = maxBytesPerTreelet;
+                }
+            }
+            else
+            {
+                completed_treelet_roots[current_treelet_root] = nodes_in_current_treelet;
+                keep_searching = false;
+                remaining_bytes = maxBytesPerTreelet;
+                break;
+            }
+            
+        }
+        
+
+
+        // Check if parent fits in remaining bytes
+
+    }
+}
 
 
 void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet)
@@ -779,8 +925,8 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                             assert(tree_level_map.find(node_addr) != tree_level_map.end());
                             tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
                         }
-                        child_addr += node.ChildSize[i] * 64;
                     }
+                    child_addr += node.ChildSize[i] * 64;
                 }
             }
             // traverse top level leaf nodes
@@ -1203,8 +1349,12 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
     std::cout << "Size expansion: " << ((double)(cachelines * 128) - (double)treesize) / (double)treesize * (double)100 << "%" << std::endl;
 }
 
+unsigned rayCount = 0;
+static unsigned VulkanRayTracing::accessedDataSize = 0;
+
 bool parentPointerPassDone = false;
 bool treeletsFormed = false;
+bool treeletsFormed2 = false;
 bool debugTraversal = false;
 bool found_AS = false;
 VkAccelerationStructureKHR topLevelAS_first = NULL;
@@ -1263,6 +1413,20 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
     }
 
 
+    // Parent Pointer Pass
+    if (!parentPointerPassDone)
+    {
+        parentPointerPass(_topLevelAS, device_offset);
+        parentPointerPassDone = true;
+    }
+
+    // // Create Treelets Bottom Up
+    // if (!treeletsFormed2)
+    // {
+    //     createTreeletsBottomUp(_topLevelAS, device_offset, GPGPU_Context()->the_gpgpusim->g_the_gpu->get_config().max_treelet_size); // 48*1024 aila2010 paper
+    //     treeletsFormed2 = true;
+    // }
+
     // Form Treelets
     if (!treeletsFormed)
     {
@@ -1270,12 +1434,7 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
         treeletsFormed = true;
     }
 
-    // Parent Pointer Pass
-    if (!parentPointerPassDone)
-    {
-        parentPointerPass(_topLevelAS, device_offset);
-        parentPointerPassDone = true;
-    }
+    
 
     //int result = isTreeletRoot((uint8_t*)_topLevelAS); // test
 
@@ -1330,8 +1489,9 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
     std::map<uint8_t*, unsigned> tree_level_map;
     
 	// Create ray
+    rayCount++; // ray id starts from 1
 	Ray ray;
-	ray.make_ray(origin, direction, Tmin, Tmax);
+	ray.make_ray(origin, direction, Tmin, Tmax, rayCount);
     thread->add_ray_properties(ray);
 
 	// Set thit to max
@@ -1805,6 +1965,15 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
     
     thread->set_rt_transactions(transactions);
     thread->set_rt_store_transactions(store_transactions);
+
+    // rayCount++; // ray id starts from 1
+    printf("RayID,%d", rayCount);
+    for (auto transaction : transactions)
+    {
+        printf(",0x%x", VulkanRayTracing::addrToTreeletID((uint8_t*)transaction.address));
+        accessedDataSize += transaction.size;
+    }
+    printf("\n");
 
     if (debugTraversal)
     {

@@ -4169,6 +4169,9 @@ void rt_unit::process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg) {
         // Might occur in warp coalescing in rare cases when multiple requests were sent, but only 1 was necessary
         RT_DPRINTF("Requester not found for: 0x%x\n", mf->get_addr());
       }
+      else {
+        printf("Requester found for 0x%x, # threads: %d\n", mf->get_addr(), requester_thread_found);
+      }
     } 
     
     // If not coalescing warps
@@ -4553,6 +4556,28 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
   else {
     next_access = inst.get_next_rt_mem_transaction();
   }
+
+  // // Tor's suggestion for the map from treelet ID to sequence ID
+  // std::map <new_addr_type, unsigned> &treeletIDToRayIDMap = GPGPU_Context()->the_gpgpusim->g_the_gpu->treeletIDToRayIDMap;
+  // std::map <new_addr_type, std::map <unsigned, unsigned>> &per_treelet_difference_histogram = GPGPU_Context()->the_gpgpusim->g_the_gpu->per_treelet_difference_histogram;
+
+  // new_addr_type next_access_treelet = (new_addr_type)VulkanRayTracing::addrToTreeletID((uint8_t*)next_access.address);
+  // for (unsigned i=0; i<m_config->warp_size; i++) {
+  //   if (!inst.get_RT_mem_accesses(i).empty()) {
+  //     if (inst.get_RT_mem_accesses(i).front().address == next_access.address) {
+  //       assert(inst.get_rt_ray_properties(i).rayid > 0);
+  //       if (treeletIDToRayIDMap.count(next_access_treelet) == 0) { // new treelet, add to map along with ray id
+  //         treeletIDToRayIDMap[next_access_treelet] = inst.get_rt_ray_properties(i).rayid;
+  //       }
+  //       else {
+  //         unsigned difference = inst.get_rt_ray_properties(i).rayid - treeletIDToRayIDMap[next_access_treelet]; // find difference between current ray id and previous ray id and add to histogram
+  //         per_treelet_difference_histogram[next_access_treelet][difference]++;
+  //         treeletIDToRayIDMap[next_access_treelet] = inst.get_rt_ray_properties(i).rayid; // update with new ray id
+  //       }
+  //     }
+  //   }
+  // }
+
   new_addr_type next_addr = next_access.address;
   new_addr_type base_addr = next_access.address;
   
@@ -4728,8 +4753,18 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
   if (status != RESERVATION_FAIL) {
     if (mf->get_uncoalesced_addr() == mf->get_uncoalesced_base_addr() && !mf->is_write()) {
       std::map<unsigned, std::map<new_addr_type, unsigned>> &ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->ray_node_tracker;
-      unsigned ctaid = m_core->get_cta_id(inst.get_warp_id());
-      ray_node_tracker[ctaid][mf->get_uncoalesced_base_addr()]++;
+      unsigned ctaid = m_core->get_cta_id(inst.get_warp_id()); // this "ctaid" is just the order or the cta in the shader, not the actual ctaid
+      unsigned tid = 0;
+      for (unsigned t = 0; t < m_core->get_warp_size(); t++) {
+        if (inst.active(t)) {
+          tid = t;
+          break;
+        }
+      }
+      dim3 ctaid_d3 = m_core->get_thread_info()[(m_core->get_warp_size() + mf->get_inst().warp_id() + tid)]->get_ctaid(); // real ctaid
+      unsigned ctauid = ctaid_d3.x + ctaid_d3.y * 12;
+      ray_node_tracker[ctauid][mf->get_uncoalesced_base_addr()]++;
+      // printf("Shader %d, ctaid: (%d, %d, %d), cta id: %d\n", m_sid, ctaid_d3.x, ctaid_d3.y, ctaid_d3.z, ctauid);
 
       std::map<new_addr_type, unsigned> &global_ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->global_ray_node_tracker;
       global_ray_node_tracker[mf->get_uncoalesced_base_addr()]++;

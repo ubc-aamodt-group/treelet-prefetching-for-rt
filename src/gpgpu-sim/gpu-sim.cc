@@ -882,6 +882,9 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
   option_parser_register(opp, "-max_treelet_size", OPT_INT32,
                          &max_treelet_size,
                          "GPU device runtime synchronize depth", "49152"); //48 KB
+  option_parser_register(opp, "-max_concurrent_rays", OPT_INT32,
+                         &maxConcurrentRays,
+                         "GPU device runtime synchronize depth", "668"); //48 KB
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1834,42 +1837,156 @@ void gpgpu_sim::gpu_print_stat() {
 
   fprintf(statfout, "\n");
 
-  // Print out the whole treelet structure whether or not the nodes are accessed
-  fprintf(statfout, "Treelet Structure\n");
-  for (auto treelet : VulkanRayTracing::treelet_roots_addr_only) { //treelet_addr_only_child_map
-    if (treelet.second.size() == 0) {
-      fprintf(statfout, "0x%x : 0x%x\n", treelet.first, treelet.first);
-    }
-    else {
-      for (auto child : treelet.second) {
-        fprintf(statfout, "0x%x : 0x%x\n", child.addr, treelet.first);
-      }
-    }
-  }
-  fprintf(statfout, "\n");
+  // // Print out the whole treelet structure whether or not the nodes are accessed
+  // fprintf(statfout, "Treelet Structure\n");
+  // for (auto treelet : VulkanRayTracing::treelet_roots_addr_only) { //treelet_addr_only_child_map
+  //   if (treelet.second.size() == 0) {
+  //     fprintf(statfout, "0x%x : 0x%x\n", treelet.first, treelet.first);
+  //   }
+  //   else {
+  //     for (auto child : treelet.second) {
+  //       fprintf(statfout, "0x%x : 0x%x\n", child.addr, treelet.first);
+  //     }
+  //   }
+  // }
+  // fprintf(statfout, "\n");
 
-  // Print what treelet root each node belongs too
-  fprintf(statfout, "Treelet children and roots\n");
-  for (auto node : treelet_root_and_children) {
-    fprintf(statfout, "0x%x : 0x%x\n", node.first, node.second);
-  }
-  fprintf(statfout, "\n");
+  // // Print what treelet root each node belongs too
+  // fprintf(statfout, "Treelet children and roots\n");
+  // for (auto node : treelet_root_and_children) {
+  //   fprintf(statfout, "0x%x : 0x%x\n", node.first, node.second);
+  // }
+  // fprintf(statfout, "\n");
 
-  // Printing the tracker maps
-  fprintf(statfout, "Global ray node tracker\n");
-  for (auto node : global_ray_node_tracker) {
-    fprintf(statfout, "0x%x : %d\n", node.first, node.second);
-  }
-  fprintf(statfout, "\n");
+  // // Printing the tracker maps
+  // fprintf(statfout, "Global ray node tracker\n");
+  // for (auto node : global_ray_node_tracker) {
+  //   fprintf(statfout, "0x%x : %d\n", node.first, node.second);
+  // }
+  // fprintf(statfout, "\n");
 
-  fprintf(statfout, "Clustered ray node tracker (grouped by CTAID/warpid)\n");
-  for (auto cta : ray_node_tracker) {
-    fprintf(statfout, "CTA/Warp %d\n", cta.first);
-    for (auto node : cta.second) {
-      fprintf(statfout, "0x%x : %d\n", node.first, node.second);
-    }
-  }
-  fprintf(statfout, "\n");
+  // fprintf(statfout, "Clustered ray node tracker (grouped by CTAID/warpid)\n");
+  // for (auto cta : ray_node_tracker) {
+  //   fprintf(statfout, "CTA/Warp %d\n", cta.first);
+  //   for (auto node : cta.second) {
+  //     fprintf(statfout, "0x%x : %d\n", node.first, node.second);
+  //   }
+  // }
+  // fprintf(statfout, "\n");
+
+  // csv for clustering
+  // FILE* statfout2 = fopen("allnodes.csv", "w");
+  // //fprintf(statfout, "allnodes csv\n");
+  // for (auto node : VulkanRayTracing::treelet_roots_addr_only) {
+  //   if (node.second.size() == 0) {
+  //     fprintf(statfout2, "0x%x,0x%x,", node.first, node.first);
+  //     fprintf(statfout2, "%d", global_ray_node_tracker[(new_addr_type)node.first]); // number of times accessed globally
+  //     for (auto cta : ray_node_tracker) {
+  //       fprintf(statfout2, ",%d", cta.second[(new_addr_type)node.first]); // number of times accessed by each CTA/Warp
+  //     }
+  //     fprintf(statfout2, "\n");
+  //   }
+  //   else {
+  //     for (auto child : node.second) {
+  //       fprintf(statfout2, "0x%x,0x%x,", child.addr, node.first);
+  //       fprintf(statfout2, "%d", global_ray_node_tracker[(new_addr_type)child.addr]); // number of times accessed globally
+  //       for (auto cta : ray_node_tracker) {
+  //         fprintf(statfout2, ",%d", cta.second[(new_addr_type)child.addr]); // number of times accessed by each CTA/Warp
+  //       }
+  //       fprintf(statfout2, "\n");
+  //     }
+  //   }
+  // }
+  // // fprintf(statfout, "\n");
+
+  // FILE* statfout3 = fopen("hitnodes.csv", "w");
+  // // fprintf(statfout, "hitonly csv\n");
+  // for (auto node : treelet_root_and_children) {
+  //   fprintf(statfout3, "0x%x,0x%x,", node.first, node.second); // node address, treelet root
+  //   fprintf(statfout3, "%d", global_ray_node_tracker[node.first]); // number of times accessed globally
+  //   for (auto cta : ray_node_tracker) {
+  //     fprintf(statfout3, ",%d", cta.second[node.first]); // number of times accessed by each CTA/Warp
+  //   }
+  //   fprintf(statfout3, "\n");
+  // }
+
+  // Size csv
+  // FILE* statfout4 = fopen("treeletsizes.csv", "w");
+  // for (auto treelet : VulkanRayTracing::treelet_roots) {
+  //   unsigned size = 0;
+  //   size += treelet.first.size;
+  //   if (treelet.second.size() != 0) {
+  //     for (auto child : treelet.second) {
+  //       size += child.size;
+  //     }
+  //   }
+  //   fprintf(statfout4, "0x%x,%d\n", treelet.first.addr, size);
+  // }
+
+  fprintf(statfout, "total accessed data size:%d\n", VulkanRayTracing::accessedDataSize);
+
+  // nodes accessed
+  // int maxConcurrentRays = m_config.maxConcurrentRays;
+  // double no_treelets = 0.0;
+  // double with_treelets = 0.0;
+  // unsigned totalAvgRays = 0;
+  // unsigned totalTreeletNodesAccessed = 0;
+  // double speedup = 0.0;
+  // unsigned max_bin = 0;
+  // double weight_total = 0.0;
+
+  // for (auto treelet : treeletIDToRayIDMap) {
+  //   int avgRays = 0;
+  //   for (auto bin : per_treelet_difference_histogram[(new_addr_type)treelet.first]) {
+  //     if (std::abs(int(bin.first)) > max_bin) {
+  //       max_bin = std::abs(int(bin.first));
+  //     }
+  //     if (std::abs(int(bin.first)) <= maxConcurrentRays && std::abs(int(bin.first)) > 0) {
+  //       avgRays += bin.second;
+  //     }
+  //   }
+  //   totalAvgRays += avgRays;
+  // }
+  // fprintf(statfout, "max_bin:%d\n", max_bin);
+  // fprintf(statfout, "totalAvgRays:%d\n", totalAvgRays);
+
+  // for (auto treelet : VulkanRayTracing::treelet_roots) {
+  //   if (treeletIDToRayIDMap.count((new_addr_type)treelet.first.addr)) {
+  //     int nodes_in_treelet = treelet.second.size() + 1;
+
+  //     int avgRays = 0;
+  //     for (auto bin : per_treelet_difference_histogram[(new_addr_type)treelet.first.addr]) {
+  //       if (std::abs(int(bin.first)) <= maxConcurrentRays && std::abs(int(bin.first)) > 0) {
+  //         avgRays += bin.second;
+  //       }
+  //     }
+
+  //     no_treelets += double(avgRays) * (log(nodes_in_treelet) / log(6));
+  //     with_treelets += double(nodes_in_treelet);
+
+  //     double current_weight = double(avgRays) / double(totalAvgRays);
+  //     weight_total += current_weight;
+  //     double current_speedup = double(avgRays) * (log(nodes_in_treelet) / log(6)) / double(nodes_in_treelet);
+  //     double weighted_speedup = current_weight * current_speedup;
+  //     fprintf(statfout, "avgRays:%d avgRays weight:%f,avgRays x log6nodes:%f, nodes_in_treelet:%d, speedup:%f, weighted speedup:%f\n", avgRays, current_weight, double(avgRays) * (log(nodes_in_treelet) / log(6)), nodes_in_treelet, current_speedup, weighted_speedup);
+  //     speedup += weighted_speedup;
+  //   }
+  // }
+  // fprintf(statfout, "weight_total:%f\n", weight_total);
+  // fprintf(statfout, "old number no treelets/with treelets:%f\n", no_treelets/with_treelets);
+  // fprintf(statfout, "speedup:%f\n", speedup);
+  // fprintf(statfout, "max concurrent rays:%d\n", maxConcurrentRays);
+
+  // fprintf(statfout, "total treelet nodes accessed:%d\n", totalTreeletNodesAccessed);
+
+  // FILE* statfout5 = fopen("difference_histogram.csv", "w");
+  // fprintf(statfout, "difference histogram:\n");
+  // for (auto bin : per_treelet_difference_histogram) {
+  //   fprintf(statfout, "%d,%d\n", bin.first, bin.second);
+  //   fprintf(statfout5, "%d,%d\n", bin.first, bin.second);
+  // }
+
+  // fprintf(statfout, "\n");
   
   shader_print_cache_stats(statfout);
   fflush(statfout);
