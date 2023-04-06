@@ -1,18 +1,19 @@
-// Copyright (c) 2009-2011, Tor M. Aamodt, Tayler Hetherington
-// The University of British Columbia
+// Copyright (c) 2009-2021, Tor M. Aamodt, Tayler Hetherington, Vijay Kandiah, Nikos Hardavellas
+// The University of British Columbia, Northwestern University
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// Redistributions of source code must retain the above copyright notice, this
-// list of conditions and the following disclaimer.
-// Redistributions in binary form must reproduce the above copyright notice,
-// this list of conditions and the following disclaimer in the documentation
-// and/or other materials provided with the distribution. Neither the name of
-// The University of British Columbia nor the names of its contributors may be
-// used to endorse or promote products derived from this software without
-// specific prior written permission.
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer;
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution;
+// 3. Neither the names of The University of British Columbia, Northwestern 
+//    University nor the names of their contributors may be used to
+//    endorse or promote products derived from this software without specific
+//    prior written permission.
 //
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -31,13 +32,15 @@
 #include "gpu-sim.h"
 #include "hashing.h"
 #include "stat-tool.h"
+#include "../../libcuda/gpgpu_context.h"
 
 // used to allocate memory that is large enough to adapt the changes in cache
 // size across kernels
 
 const char *cache_request_status_str(enum cache_request_status status) {
   static const char *static_cache_request_status_str[] = {
-      "HIT", "HIT_RESERVED", "MISS", "RESERVATION_FAIL", "SECTOR_MISS"};
+      "HIT",         "HIT_RESERVED", "MISS", "RESERVATION_FAIL",
+      "SECTOR_MISS", "MSHR_HIT"};
 
   assert(sizeof(static_cache_request_status_str) / sizeof(const char *) ==
          NUM_CACHE_REQUEST_STATUS);
@@ -63,9 +66,9 @@ unsigned l1d_cache_config::set_bank(new_addr_type addr) const {
   // For sector cache, we select one sector per bank (sector interleaving)
   // This is what was found in Volta (one sector per bank, sector interleaving)
   // otherwise, line interleaving
-  return cache_config::hash_function(addr, l1_banks, l1_banks_byte_interleaving,
-                                     m_l1_banks_log2,
-                                     l1_banks_hashing_function);
+  return cache_config::hash_function(addr, l1_banks,
+                                     l1_banks_byte_interleaving_log2,
+                                     l1_banks_log2, l1_banks_hashing_function);
 }
 
 unsigned cache_config::set_index(new_addr_type addr) const {
@@ -210,6 +213,7 @@ void tag_array::init(int core_id, int type_id) {
   m_core_id = core_id;
   m_type_id = type_id;
   is_used = false;
+  m_dirty = 0;
 }
 
 void tag_array::add_pending_line(mem_fetch *mf) {
@@ -231,15 +235,15 @@ void tag_array::remove_pending_line(mem_fetch *mf) {
 }
 
 enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
-                                           mem_fetch *mf,
+                                           mem_fetch *mf, bool is_write,
                                            bool probe_mode) const {
   mem_access_sector_mask_t mask = mf->get_access_sector_mask();
-  return probe(addr, idx, mask, probe_mode, mf);
+  return probe(addr, idx, mask, is_write, probe_mode, mf);
 }
 
 enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
                                            mem_access_sector_mask_t mask,
-                                           bool probe_mode,
+                                           bool is_write, bool probe_mode,
                                            mem_fetch *mf) const {
   // assert( m_config.m_write_policy == READ_ONLY );
   unsigned set_index = m_config.set_index(addr);
@@ -250,7 +254,6 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   unsigned long long valid_timestamp = (unsigned)-1;
 
   bool all_reserved = true;
-
   // check for hit or pending hit
   for (unsigned way = 0; way < m_config.m_assoc; way++) {
     unsigned index = set_index * m_config.m_assoc + way;
@@ -263,7 +266,7 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
         idx = index;
         return HIT;
       } else if (line->get_status(mask) == MODIFIED) {
-        if (line->is_readable(mask)) {
+        if ((!is_write && line->is_readable(mask)) || is_write) {
           idx = index;
           return HIT;
         } else {
@@ -279,20 +282,31 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
       }
     }
     if (!line->is_reserved_line()) {
-      all_reserved = false;
-      if (line->is_invalid_line()) {
-        invalid_line = index;
-      } else {
-        // valid line : keep track of most appropriate replacement candidate
-        if (m_config.m_replacement_policy == LRU) {
-          if (line->get_last_access_time() < valid_timestamp) {
-            valid_timestamp = line->get_last_access_time();
-            valid_line = index;
-          }
-        } else if (m_config.m_replacement_policy == FIFO) {
-          if (line->get_alloc_time() < valid_timestamp) {
-            valid_timestamp = line->get_alloc_time();
-            valid_line = index;
+      // percentage of dirty lines in the cache
+      // number of dirty lines / total lines in the cache
+      float dirty_line_percentage =
+          ((float)m_dirty / (m_config.m_nset * m_config.m_assoc)) * 100;
+      // If the cacheline is from a load op (not modified), 
+      // or the total dirty cacheline is above a specific value,
+      // Then this cacheline is eligible to be considered for replacement candidate
+      // i.e. Only evict clean cachelines until total dirty cachelines reach the limit.
+      if (!line->is_modified_line() ||
+          dirty_line_percentage >= m_config.m_wr_percent) {
+        all_reserved = false;
+        if (line->is_invalid_line()) {
+          invalid_line = index;
+        } else {
+          // valid line : keep track of most appropriate replacement candidate
+          if (m_config.m_replacement_policy == LRU) {
+            if (line->get_last_access_time() < valid_timestamp) {
+              valid_timestamp = line->get_last_access_time();
+              valid_line = index;
+            }
+          } else if (m_config.m_replacement_policy == FIFO) {
+            if (line->get_alloc_time() < valid_timestamp) {
+              valid_timestamp = line->get_alloc_time();
+              valid_line = index;
+            }
           }
         }
       }
@@ -311,15 +325,6 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
   } else
     abort();  // if an unreserved block exists, it is either invalid or
               // replaceable
-
-  if (probe_mode && m_config.is_streaming()) {
-    line_table::const_iterator i =
-        pending_lines.find(m_config.block_addr(addr));
-    assert(mf);
-    if (!mf->is_write() && i != pending_lines.end()) {
-      if (i->second != mf->get_inst().get_uid()) return SECTOR_MISS;
-    }
-  }
 
   return MISS;
 }
@@ -340,7 +345,7 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   m_access++;
   is_used = true;
   shader_cache_access_log(m_core_id, m_type_id, 0);  // log accesses to cache
-  enum cache_request_status status = probe(addr, idx, mf);
+  enum cache_request_status status = probe(addr, idx, mf, mf->is_write());
   switch (status) {
     case HIT_RESERVED:
       m_pending_hit++;
@@ -353,8 +358,12 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
       if (m_config.m_alloc_policy == ON_MISS) {
         if (m_lines[idx]->is_modified_line()) {
           wb = true;
+          // m_lines[idx]->set_byte_mask(mf);
           evicted.set_info(m_lines[idx]->m_block_addr,
-                           m_lines[idx]->get_modified_size());
+                           m_lines[idx]->get_modified_size(),
+                           m_lines[idx]->get_dirty_byte_mask(),
+                           m_lines[idx]->get_dirty_sector_mask());
+          m_dirty--;
         }
         m_lines[idx]->allocate(m_config.tag(addr), m_config.block_addr(addr),
                                time, mf->get_access_sector_mask());
@@ -365,8 +374,12 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
       m_sector_miss++;
       shader_cache_access_log(m_core_id, m_type_id, 1);  // log cache misses
       if (m_config.m_alloc_policy == ON_MISS) {
+        bool before = m_lines[idx]->is_modified_line();
         ((sector_cache_block *)m_lines[idx])
             ->allocate_sector(time, mf->get_access_sector_mask());
+        if (before && !m_lines[idx]->is_modified_line()) {
+          m_dirty--;
+        }
       }
       break;
     case RESERVATION_FAIL:
@@ -383,31 +396,129 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
   return status;
 }
 
-void tag_array::fill(new_addr_type addr, unsigned time, mem_fetch *mf) {
-  fill(addr, time, mf->get_access_sector_mask());
+void tag_array::fill(new_addr_type addr, unsigned time, mem_fetch *mf,
+                     bool is_write) {
+  fill(addr, time, mf->get_access_sector_mask(), mf->get_access_byte_mask(),
+       is_write, mf);
 }
 
 void tag_array::fill(new_addr_type addr, unsigned time,
-                     mem_access_sector_mask_t mask) {
+                     mem_access_sector_mask_t mask,
+                     mem_access_byte_mask_t byte_mask, bool is_write, mem_fetch *mf) {
   // assert( m_config.m_alloc_policy == ON_FILL );
   unsigned idx;
-  enum cache_request_status status = probe(addr, idx, mask);
+  enum cache_request_status status = probe(addr, idx, mask, is_write);
+  bool before = m_lines[idx]->is_modified_line();
   // assert(status==MISS||status==SECTOR_MISS); // MSHR should have prevented
   // redundant memory request
-  if (status == MISS)
+  if (status == MISS) {
+    if (m_lines[idx]->get_line_fill_source() == PREFETCH && m_core_id >= 0 && m_type_id == 0) { // m_core_id >= 0 means its L1 cache, m_type_id == 0 for data cache
+      // This part evicts the prefetch cache block
+      // Find the most recent prefetch request that filled this cache block
+      std::map<new_addr_type, std::vector<prefetch_block_info>>&prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      // new_addr_type prefetch_addr = mf->get_uncoalesced_addr();
+      // new_addr_type mshr_addr = m_config.mshr_addr(prefetch_addr);
+      // unsigned most_recent_fill_time = 0;
+      // assert(prefetch_request_tracker.count(mshr_addr));
+      // if (prefetch_request_tracker.count(mshr_addr)) {
+      //   for (auto &prefetch_info : prefetch_request_tracker[mshr_addr]) {
+      //     if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
+      //       assert(prefetch_info.fill_index == idx);
+      //       assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
+      //       prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+      //     }
+      //   }
+      // }
+
+      // std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      unsigned most_recent_fill_time = 0;
+      for (auto &addr_vec : prefetch_request_tracker) {
+        for (auto &prefetch_info : addr_vec.second) {
+          if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
+            assert(prefetch_info.fill_index == idx);
+            assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
+            prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+          }
+        }
+      }
+    }
+    
     m_lines[idx]->allocate(m_config.tag(addr), m_config.block_addr(addr), time,
                            mask);
+  }
   else if (status == SECTOR_MISS) {
     assert(m_config.m_cache_type == SECTOR);
+
+    if (m_lines[idx]->get_sector_fill_source(mask) == PREFETCH  && m_core_id >= 0 && m_type_id == 0) {
+      // This part evicts the prefetch cache block
+      // Find the most recent prefetch request that filled this cache block
+      std::map<new_addr_type, std::vector<prefetch_block_info>>&prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      // new_addr_type prefetch_addr = mf->get_uncoalesced_addr();
+      // new_addr_type mshr_addr = m_config.mshr_addr(prefetch_addr);
+      // unsigned most_recent_fill_time = 0;
+      // assert(prefetch_request_tracker.count(mshr_addr));
+      // if (prefetch_request_tracker.count(mshr_addr)) {
+      //   for (auto &prefetch_info : prefetch_request_tracker[mshr_addr]) {
+      //     if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
+      //       assert(prefetch_info.fill_index == idx);
+      //       assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
+      //       prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+      //     }
+      //   }
+      // }
+
+      // std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+      unsigned most_recent_fill_time = 0;
+      for (auto &addr_vec : prefetch_request_tracker) {
+        for (auto &prefetch_info : addr_vec.second) {
+          if (m_lines[idx]->get_sector_fill_mf_request_uid(mask) == prefetch_info.mf_request_uid) { // TODO: record the mf that fills the cacheline in the cache_block for ease of checking the entry
+            assert(prefetch_info.fill_index == idx);
+            assert(m_config.block_addr(prefetch_info.m_prefetch_request_addr) == m_lines[idx]->m_block_addr);
+            prefetch_info.evict_time = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle;
+          }
+        }
+      }
+    }
+
     ((sector_cache_block *)m_lines[idx])->allocate_sector(time, mask);
   }
 
-  m_lines[idx]->fill(time, mask);
+  if (before && !m_lines[idx]->is_modified_line()) {
+    m_dirty--;
+  }
+  before = m_lines[idx]->is_modified_line();
+  m_lines[idx]->fill(time, mask, byte_mask, mf);
+  if (m_lines[idx]->is_modified_line() && !before) {
+    m_dirty++;
+  }
+
+  if (mf && mf->isprefetch()) {
+    std::map<new_addr_type, std::vector<prefetch_block_info>>&prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+    new_addr_type prefetch_addr = mf->get_uncoalesced_addr();
+    new_addr_type mshr_addr = m_config.mshr_addr(prefetch_addr);
+    assert(prefetch_request_tracker.count(mshr_addr));
+    if (prefetch_request_tracker.count(mshr_addr)) {
+      for (auto &prefetch_info : prefetch_request_tracker[mshr_addr]) {
+        prefetch_info.fill_index = idx;
+      }
+    }
+
+    // std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_core_id]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+    // for (auto &prefetch_info : prefetch_request_tracker) {
+    //   if (prefetch_info.mf_request_uid == mf->get_request_uid()) {
+    //     prefetch_info.fill_index = idx;
+    //   }
+    // }
+  }
 }
 
 void tag_array::fill(unsigned index, unsigned time, mem_fetch *mf) {
   assert(m_config.m_alloc_policy == ON_MISS);
-  m_lines[index]->fill(time, mf->get_access_sector_mask());
+  bool before = m_lines[index]->is_modified_line();
+  m_lines[index]->fill(time, mf->get_access_sector_mask(), mf->get_access_byte_mask(), mf);
+  if (m_lines[index]->is_modified_line() && !before) {
+    m_dirty++;
+  }
 }
 
 // TODO: we need write back the flushed data to the upper level
@@ -416,10 +527,12 @@ void tag_array::flush() {
 
   for (unsigned i = 0; i < m_config.get_num_lines(); i++)
     if (m_lines[i]->is_modified_line()) {
-      for (unsigned j = 0; j < SECTOR_CHUNCK_SIZE; j++)
+      for (unsigned j = 0; j < SECTOR_CHUNCK_SIZE; j++) {
         m_lines[i]->set_status(INVALID, mem_access_sector_mask_t().set(j));
+      }
     }
 
+  m_dirty = 0;
   is_used = false;
 }
 
@@ -430,6 +543,7 @@ void tag_array::invalidate() {
     for (unsigned j = 0; j < SECTOR_CHUNCK_SIZE; j++)
       m_lines[i]->set_status(INVALID, mem_access_sector_mask_t().set(j));
 
+  m_dirty = 0;
   is_used = false;
 }
 
@@ -485,8 +599,10 @@ bool was_writeback_sent(const std::list<cache_event> &events,
                         cache_event &wb_event) {
   for (std::list<cache_event>::const_iterator e = events.begin();
        e != events.end(); e++) {
-    if ((*e).m_cache_event_type == WRITE_BACK_REQUEST_SENT) wb_event = *e;
-    return true;
+    if ((*e).m_cache_event_type == WRITE_BACK_REQUEST_SENT) {
+      wb_event = *e;
+      return true;
+    }
   }
   return false;
 }
@@ -525,8 +641,22 @@ bool mshr_table::full(new_addr_type block_addr) const {
 }
 
 /// Add or merge this access
-void mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
+bool mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
   assert(mf != NULL); //if (mf == NULL) return; TIMING_TODO: WHY bug?
+
+  // m_num_entries > 1000 is to make sure it only counts the l1d
+  bool merged = false;
+  if (m_num_entries > 1000 && m_data.count(block_addr)) {
+    GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_all_merges++;
+    RT_DPRINTF("Requests merged in MSHR: %d\n", GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_all_merges);
+    merged = true;
+  }
+  if (m_num_entries > 1000 && mf->israytrace() && m_data.count(block_addr)) {
+    GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_rt_merges++;
+    GPGPU_Context()->the_gpgpusim->g_the_gpu->block_addr_merge_tracker[block_addr] ++;
+    RT_DPRINTF("RT Requests merged in MSHR: %d\n", GPGPU_Context()->the_gpgpusim->g_the_gpu->mshr_rt_merges);
+    merged = true;
+  }
   m_data[block_addr].m_list.push_back(mf);
   assert(m_data.size() <= m_num_entries);
   assert(m_data[block_addr].m_list.size() <= m_max_merged);
@@ -534,6 +664,8 @@ void mshr_table::add(new_addr_type block_addr, mem_fetch *mf) {
   if (mf->isatomic()) {
     m_data[block_addr].m_has_atomic = true;
   }
+
+  return merged;
 }
 
 /// check is_read_after_write_pending
@@ -625,6 +757,7 @@ void cache_stats::clear() {
   ///
   for (unsigned i = 0; i < NUM_MEM_ACCESS_TYPE; ++i) {
     std::fill(m_stats[i].begin(), m_stats[i].end(), 0);
+    std::fill(m_stats_pw[i].begin(), m_stats_pw[i].end(), 0);
     std::fill(m_fail_stats[i].begin(), m_fail_stats[i].end(), 0);
   }
   m_cache_port_available_cycles = 0;
@@ -791,7 +924,9 @@ void cache_stats::print_stats(FILE *fout, const char *cache_name) const {
               cache_request_status_str((enum cache_request_status)status),
               m_stats[type][status]);
 
-      if (status != RESERVATION_FAIL)
+      if (status != RESERVATION_FAIL && status != MSHR_HIT)
+        // MSHR_HIT is a special type of SECTOR_MISS
+        // so its already included in the SECTOR_MISS
         total_access[type] += m_stats[type][status];
     }
   }
@@ -1080,11 +1215,12 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   assert(e->second.m_valid);
   mf->set_data_size(e->second.m_data_size);
   mf->set_addr(e->second.m_addr);
+  if (mf->isprefetch())
+    mf->set_prefetch_fill_cycle(GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle + GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_tot_sim_cycle);
   if (m_config.m_alloc_policy == ON_MISS)
     m_tag_array->fill(e->second.m_cache_index, time, mf);
   else if (m_config.m_alloc_policy == ON_FILL) {
-    m_tag_array->fill(e->second.m_block_addr, time, mf);
-    if (m_config.is_streaming()) m_tag_array->remove_pending_line(mf);
+    m_tag_array->fill(e->second.m_block_addr, time, mf, mf->is_write());
   } else
     abort();
   bool has_atomic = false;
@@ -1092,9 +1228,13 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   if (has_atomic) {
     assert(m_config.m_alloc_policy == ON_MISS);
     cache_block_t *block = m_tag_array->get_block(e->second.m_cache_index);
+    if (!block->is_modified_line()) {
+      m_tag_array->inc_dirty();
+    }
     block->set_status(MODIFIED,
                       mf->get_access_sector_mask());  // mark line as dirty for
                                                       // atomic operation
+    block->set_byte_mask(mf);
   }
   m_extra_mf_fields.erase(mf);
   m_bandwidth_management.use_fill_port(mf);
@@ -1124,7 +1264,7 @@ void baseline_cache::display_state(FILE *fp) const {
 }
 
 /// Read miss handler without writeback
-void baseline_cache::send_read_request(new_addr_type addr,
+bool baseline_cache::send_read_request(new_addr_type addr,
                                        new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
                                        unsigned time, bool &do_miss,
@@ -1132,18 +1272,19 @@ void baseline_cache::send_read_request(new_addr_type addr,
                                        bool read_only, bool wa) {
   bool wb = false;
   evicted_block_info e;
-  send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb, e,
+  return send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb, e,
                     events, read_only, wa);
 }
 
 /// Read miss handler. Check MSHR hit or MSHR available
-void baseline_cache::send_read_request(new_addr_type addr,
+bool baseline_cache::send_read_request(new_addr_type addr,
                                        new_addr_type block_addr,
                                        unsigned cache_index, mem_fetch *mf,
                                        unsigned time, bool &do_miss, bool &wb,
                                        evicted_block_info &evicted,
                                        std::list<cache_event> &events,
                                        bool read_only, bool wa) {
+  bool mshr_merge = false;
   new_addr_type mshr_addr = m_config.mshr_addr(mf->get_addr());
   bool mshr_hit = m_mshrs.probe(mshr_addr);
   bool mshr_avail = !m_mshrs.full(mshr_addr);
@@ -1153,7 +1294,8 @@ void baseline_cache::send_read_request(new_addr_type addr,
     else
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
-    m_mshrs.add(mshr_addr, mf);
+    mshr_merge = m_mshrs.add(mshr_addr, mf);
+    m_stats.inc_stats(mf->get_access_type(), MSHR_HIT);
     do_miss = true;
 
   } else if (!mshr_hit && mshr_avail &&
@@ -1163,7 +1305,7 @@ void baseline_cache::send_read_request(new_addr_type addr,
     else
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
 
-    m_mshrs.add(mshr_addr, mf);
+    mshr_merge = m_mshrs.add(mshr_addr, mf);
     if (m_config.is_streaming() && m_config.m_cache_type == SECTOR) {
       m_tag_array->add_pending_line(mf);
     }
@@ -1182,6 +1324,8 @@ void baseline_cache::send_read_request(new_addr_type addr,
     m_stats.inc_fail_stats(mf->get_access_type(), MSHR_ENTRY_FAIL);
   else
     assert(0);
+
+  return mshr_merge;
 }
 
 /// Sends write request to lower level memory (write or writeback)
@@ -1191,6 +1335,25 @@ void data_cache::send_write_request(mem_fetch *mf, cache_event request,
   events.push_back(request);
   m_miss_queue.push_back(mf);
   mf->set_status(m_miss_queue_status, time);
+}
+
+void data_cache::update_m_readable(mem_fetch *mf, unsigned cache_index) {
+  cache_block_t *block = m_tag_array->get_block(cache_index);
+  for (unsigned i = 0; i < SECTOR_CHUNCK_SIZE; i++) {
+    if (mf->get_access_sector_mask().test(i)) {
+      bool all_set = true;
+      for (unsigned k = i * SECTOR_SIZE; k < (i + 1) * SECTOR_SIZE; k++) {
+        // If any bit in the byte mask (within the sector) is not set, 
+        // the sector is unreadble
+        if (!block->get_dirty_byte_mask().test(k)) {
+          all_set = false;
+          break;
+        }
+      }
+      if (all_set)
+        block->set_m_readable(true, mf->get_access_sector_mask());
+    }
+  }
 }
 
 /****** Write-hit functions (Set by config file) ******/
@@ -1204,7 +1367,12 @@ cache_request_status data_cache::wr_hit_wb(new_addr_type addr,
   new_addr_type block_addr = m_config.block_addr(addr);
   m_tag_array->access(block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
+  if (!block->is_modified_line()) {
+    m_tag_array->inc_dirty();
+  }
   block->set_status(MODIFIED, mf->get_access_sector_mask());
+  block->set_byte_mask(mf);
+  update_m_readable(mf,cache_index);
 
   return HIT;
 }
@@ -1223,7 +1391,12 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
   new_addr_type block_addr = m_config.block_addr(addr);
   m_tag_array->access(block_addr, time, cache_index, mf);  // update LRU state
   cache_block_t *block = m_tag_array->get_block(cache_index);
+  if (!block->is_modified_line()) {
+    m_tag_array->inc_dirty();
+  }
   block->set_status(MODIFIED, mf->get_access_sector_mask());
+  block->set_byte_mask(mf);
+  update_m_readable(mf,cache_index);
 
   // generate a write-through
   send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
@@ -1333,8 +1506,10 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
       assert(status ==
              MISS);  // SECTOR_MISS and HIT_RESERVED should not send write back
       mem_fetch *wb = m_memfetch_creator->alloc(
-          evicted.m_block_addr, m_wrbk_type, evicted.m_modified_size, true,
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+          evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
+          evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
+          true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
+          NULL);
       // the evicted block may have wrong chip id when advanced L2 hashing  is
       // used, so set the right chip address from the original mf
       wb->set_chip(mf->get_tlx_addr().chip);
@@ -1371,7 +1546,11 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
         m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
     assert(status != HIT);
     cache_block_t *block = m_tag_array->get_block(cache_index);
+    if (!block->is_modified_line()) {
+      m_tag_array->inc_dirty();
+    }
     block->set_status(MODIFIED, mf->get_access_sector_mask());
+    block->set_byte_mask(mf);
     if (status == HIT_RESERVED)
       block->set_ignore_on_fill(true, mf->get_access_sector_mask());
 
@@ -1380,8 +1559,10 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
       // (already modified lower level)
       if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
         mem_fetch *wb = m_memfetch_creator->alloc(
-            evicted.m_block_addr, m_wrbk_type, evicted.m_modified_size, true,
-            m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+            evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
+            evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
+            true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
+            NULL);
         // the evicted block may have wrong chip id when advanced L2 hashing  is
         // used, so set the right chip address from the original mf
         wb->set_chip(mf->get_tlx_addr().chip);
@@ -1442,6 +1623,7 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
 
     cache_block_t *block = m_tag_array->get_block(cache_index);
     block->set_modified_on_fill(true, mf->get_access_sector_mask());
+    block->set_byte_mask_on_fill(true);
 
     events.push_back(cache_event(WRITE_ALLOCATE_SENT));
 
@@ -1450,8 +1632,10 @@ enum cache_request_status data_cache::wr_miss_wa_fetch_on_write(
       // (already modified lower level)
       if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
         mem_fetch *wb = m_memfetch_creator->alloc(
-            evicted.m_block_addr, m_wrbk_type, evicted.m_modified_size, true,
-            m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+            evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
+            evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
+            true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
+            NULL);
         // the evicted block may have wrong chip id when advanced L2 hashing  is
         // used, so set the right chip address from the original mf
         wb->set_chip(mf->get_tlx_addr().chip);
@@ -1479,6 +1663,10 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
     return RESERVATION_FAIL;  // cannot handle request this cycle
   }
 
+  if (m_config.m_write_policy == WRITE_THROUGH) {
+    send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
+  }
+
   bool wb = false;
   evicted_block_info evicted;
 
@@ -1486,25 +1674,35 @@ enum cache_request_status data_cache::wr_miss_wa_lazy_fetch_on_read(
       m_tag_array->access(block_addr, time, cache_index, wb, evicted, mf);
   assert(m_status != HIT);
   cache_block_t *block = m_tag_array->get_block(cache_index);
+  if (!block->is_modified_line()) {
+    m_tag_array->inc_dirty();
+  }
   block->set_status(MODIFIED, mf->get_access_sector_mask());
+  block->set_byte_mask(mf);
   if (m_status == HIT_RESERVED) {
     block->set_ignore_on_fill(true, mf->get_access_sector_mask());
     block->set_modified_on_fill(true, mf->get_access_sector_mask());
+    block->set_byte_mask_on_fill(true);
   }
 
   if (mf->get_access_byte_mask().count() == m_config.get_atom_sz()) {
     block->set_m_readable(true, mf->get_access_sector_mask());
   } else {
     block->set_m_readable(false, mf->get_access_sector_mask());
+    if (m_status == HIT_RESERVED)
+      block->set_readable_on_fill(true, mf->get_access_sector_mask());
   }
+  update_m_readable(mf,cache_index);
 
   if (m_status != RESERVATION_FAIL) {
     // If evicted block is modified and not a write-through
     // (already modified lower level)
     if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
       mem_fetch *wb = m_memfetch_creator->alloc(
-          evicted.m_block_addr, m_wrbk_type, evicted.m_modified_size, true,
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+          evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
+          evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
+          true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
+          NULL);
       // the evicted block may have wrong chip id when advanced L2 hashing  is
       // used, so set the right chip address from the original mf
       wb->set_chip(mf->get_tlx_addr().chip);
@@ -1547,8 +1745,12 @@ enum cache_request_status data_cache::rd_hit_base(
   if (mf->isatomic()) {
     assert(mf->get_access_type() == GLOBAL_ACC_R);
     cache_block_t *block = m_tag_array->get_block(cache_index);
+    if (!block->is_modified_line()) {
+      m_tag_array->inc_dirty();
+    }
     block->set_status(MODIFIED,
-                      mf->get_access_sector_mask());  // mark line as dirty
+                      mf->get_access_sector_mask());  // mark line as
+    block->set_byte_mask(mf);
   }
   return HIT;
 }
@@ -1570,8 +1772,9 @@ enum cache_request_status data_cache::rd_miss_base(
   new_addr_type block_addr = m_config.block_addr(addr);
   bool do_miss = false;
   bool wb = false;
+  bool mshr_merge = false;
   evicted_block_info evicted;
-  send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb,
+  mshr_merge = send_read_request(addr, block_addr, cache_index, mf, time, do_miss, wb,
                     evicted, events, false, false);
 
   if (do_miss) {
@@ -1579,15 +1782,21 @@ enum cache_request_status data_cache::rd_miss_base(
     // (already modified lower level)
     if (wb && (m_config.m_write_policy != WRITE_THROUGH)) {
       mem_fetch *wb = m_memfetch_creator->alloc(
-          evicted.m_block_addr, m_wrbk_type, evicted.m_modified_size, true,
-          m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+          evicted.m_block_addr, m_wrbk_type, mf->get_access_warp_mask(),
+          evicted.m_byte_mask, evicted.m_sector_mask, evicted.m_modified_size,
+          true, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, -1, -1, -1,
+          NULL);
       // the evicted block may have wrong chip id when advanced L2 hashing  is
       // used, so set the right chip address from the original mf
       wb->set_chip(mf->get_tlx_addr().chip);
       wb->set_parition(mf->get_tlx_addr().sub_partition);
       send_write_request(wb, WRITE_BACK_REQUEST_SENT, time, events);
     }
-    return MISS;
+
+    if (mshr_merge)
+      return HIT_RESERVED;
+    else
+      return MISS;
   }
   return RESERVATION_FAIL;
 }
@@ -1603,8 +1812,10 @@ enum cache_request_status read_only_cache::access(
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
   enum cache_request_status status =
-      m_tag_array->probe(block_addr, cache_index, mf);
+      m_tag_array->probe(block_addr, cache_index, mf, mf->is_write());
   enum cache_request_status cache_status = RESERVATION_FAIL;
+
+  bool mshr_merge = false;;
 
   if (status == HIT) {
     cache_status = m_tag_array->access(block_addr, time, cache_index,
@@ -1615,7 +1826,10 @@ enum cache_request_status read_only_cache::access(
       send_read_request(addr, block_addr, cache_index, mf, time, do_miss,
                         events, true, false);
       if (do_miss)
-        cache_status = MISS;
+        if (mshr_merge)
+          cache_status = HIT_RESERVED;
+        else
+          cache_status = MISS;
       else
         cache_status = RESERVATION_FAIL;
     } else {
@@ -1690,7 +1904,7 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   new_addr_type block_addr = m_config.block_addr(addr);
   unsigned cache_index = (unsigned)-1;
   enum cache_request_status probe_status =
-      m_tag_array->probe(block_addr, cache_index, mf, true);
+      m_tag_array->probe(block_addr, cache_index, mf, mf->is_write(), true);
   enum cache_request_status access_status =
       process_tag_probe(wr, probe_status, addr, cache_index, mf, time, events);
   m_stats.inc_stats(mf->get_access_type(),
@@ -1698,6 +1912,183 @@ enum cache_request_status data_cache::access(new_addr_type addr, mem_fetch *mf,
   m_stats.inc_stats_pw(mf->get_access_type(), m_stats.select_stats_status(
                                                   probe_status, access_status));
   
+  // Update prefetch metadata after every raytracing mf cache access (L1 Cache)
+  if (mf->israytrace() && !mf->isprefetch() && cache_index != (unsigned)-1) { // if cache_index == (unsigned)-1, it means reservation fail
+    if (m_tag_array->get_m_core_id() >= 0 && m_tag_array->get_m_type_id() == 0) {
+      // if (m_tag_array->get_m_lines()[cache_index]->get_sector_fill_source(mf->get_access_sector_mask()) == PREFETCH) {
+        std::map<new_addr_type, std::vector<prefetch_block_info>> &prefetch_request_tracker_map = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_tag_array->get_m_core_id()]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+        //std::vector<prefetch_block_info> &prefetch_request_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[m_tag_array->get_m_core_id()]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+        if (access_status == HIT) {
+          if (m_tag_array->get_m_lines()[cache_index]->get_sector_fill_source(mf->get_access_sector_mask()) == PREFETCH) {
+            new_addr_type mshr_addr = m_config.mshr_addr(mf->get_uncoalesced_addr());
+            bool found = false;
+            if (prefetch_request_tracker_map.count(m_config.mshr_addr(mshr_addr)))
+              found = true;
+            
+            assert(found);
+            if (found) {
+              std::vector<prefetch_block_info> &prefetch_request_tracker = prefetch_request_tracker_map[mshr_addr];
+              if (m_tag_array->get_m_lines()[cache_index]->get_sector_fill_source(mf->get_access_sector_mask()) == PREFETCH) {
+                // Find the most recent prefetch entry that fills this cache block
+                // unsigned most_recent_fill_time = 0;
+                // int max_prefetch_index = -1;
+                // for (int i = 0; i < prefetch_request_tracker.size(); i++) {
+                //   if (prefetch_request_tracker[i].prefetch_fill_time > most_recent_fill_time) { // Find most recent fill time
+                //     most_recent_fill_time = prefetch_request_tracker[i].prefetch_fill_time;
+                //     max_prefetch_index = i;
+                //   }
+                // }
+                int max_prefetch_index = -1;
+                for (int i = 0; i < prefetch_request_tracker.size(); i++) {
+                  if (prefetch_request_tracker[i].mf_request_uid == m_tag_array->get_m_lines()[cache_index]->get_sector_fill_mf_request_uid(mf->get_access_sector_mask())) {
+                    max_prefetch_index = i;
+                    break;
+                  }
+                }
+                assert(max_prefetch_index != -1);
+                if (max_prefetch_index != -1) {
+                  prefetch_request_tracker[max_prefetch_index].times_accessed++;
+                  prefetch_request_tracker[max_prefetch_index].last_accessed_time_by_demand_load = time;
+                  if (prefetch_request_tracker[max_prefetch_index].effectiveness == UNCLASSIFIED) {
+                    prefetch_request_tracker[max_prefetch_index].effectiveness = TIMELY;
+                    prefetch_request_tracker[max_prefetch_index].cycle_classified = time;
+                  }
+                  if (prefetch_request_tracker[max_prefetch_index].effectiveness == TIMELY)
+                    prefetch_request_tracker[max_prefetch_index].times_classified_as_first_classification++;
+                  prefetch_request_tracker[max_prefetch_index].total_times_classified++;
+                }
+              }
+            }
+          }
+        }
+        else if (access_status == HIT_RESERVED) {
+          new_addr_type mshr_addr = m_config.mshr_addr(mf->get_uncoalesced_addr());
+          bool found = false;
+          if (prefetch_request_tracker_map.count(m_config.mshr_addr(mshr_addr)))
+            found = true;
+          
+          if (found) {
+            std::vector<prefetch_block_info> &prefetch_request_tracker = prefetch_request_tracker_map[mshr_addr];
+            // Find prefetch request with largest issue time but no fill time
+            unsigned most_recent_issue_time = 0;
+            int max_prefetch_index = -1;
+            for (int i = 0; i < prefetch_request_tracker.size(); i++) {
+              if (prefetch_request_tracker[i].prefetch_fill_time == 0) { // Match MSHR address
+                if (prefetch_request_tracker[i].prefetch_issue_time > most_recent_issue_time) { // Find most recent issue time
+                  most_recent_issue_time = prefetch_request_tracker[i].prefetch_issue_time;
+                  max_prefetch_index = i;
+                }
+              }
+            }
+            if (max_prefetch_index != -1) {
+              if (prefetch_request_tracker[max_prefetch_index].effectiveness == UNCLASSIFIED) {
+                prefetch_request_tracker[max_prefetch_index].effectiveness = LATE;
+                prefetch_request_tracker[max_prefetch_index].cycle_classified = time;
+              }
+              if (prefetch_request_tracker[max_prefetch_index].effectiveness == LATE)
+                prefetch_request_tracker[max_prefetch_index].times_classified_as_first_classification++;
+              prefetch_request_tracker[max_prefetch_index].total_times_classified++;
+            }
+          }
+        }
+        else if (access_status == MISS || access_status == SECTOR_MISS) {
+          new_addr_type mshr_addr = m_config.mshr_addr(mf->get_uncoalesced_addr());
+          bool found = false;
+          if (prefetch_request_tracker_map.count(m_config.mshr_addr(mshr_addr)))
+            found = true;
+          
+          if (found) {
+            std::vector<prefetch_block_info> &prefetch_request_tracker = prefetch_request_tracker_map[mshr_addr];
+            // Find most recent evicted prefetch
+            unsigned most_recent_evict_time = 0;
+            int max_prefetch_index = -1;
+            for (int i = 0; i < prefetch_request_tracker.size(); i++) {
+              if (prefetch_request_tracker[i].evict_time > most_recent_evict_time) { // Find most recent evict time
+                most_recent_evict_time = prefetch_request_tracker[i].evict_time;
+                max_prefetch_index = i;
+              }
+            }
+            if (max_prefetch_index != -1) {
+              if (prefetch_request_tracker[max_prefetch_index].effectiveness == UNCLASSIFIED) {
+                prefetch_request_tracker[max_prefetch_index].effectiveness = TOO_EARLY;
+                prefetch_request_tracker[max_prefetch_index].cycle_classified = time;
+              }
+              if (prefetch_request_tracker[max_prefetch_index].effectiveness == TOO_EARLY)
+                prefetch_request_tracker[max_prefetch_index].times_classified_as_first_classification++;
+              prefetch_request_tracker[max_prefetch_index].total_times_classified++;
+            }
+          }
+        }
+        // else // reservation fail
+      // }
+    }
+  }
+
+  // L1 Cache tracking
+  if (mf->israytrace() && !mf->isprefetch() && m_tag_array->get_m_core_id() >= 0) {
+    if (access_status == HIT) {
+      if (m_tag_array->get_m_lines()[cache_index]->get_line_fill_source() == PREFETCH) {
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_hits_by_prefetches++;
+      }
+      else {
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_hits_by_demand_load++;
+      }
+    }
+    else if (access_status == HIT_RESERVED) {
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_pending_hits++;
+    }
+    else if (access_status == MISS || access_status == SECTOR_MISS) {
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l1_cache_rt_misses++;
+    }
+  }
+
+  // L2 Cache tracking
+  if (mf->israytrace() && !mf->isprefetch() && m_tag_array->get_m_core_id() < 0) {
+    if (access_status == HIT) {
+      if (m_tag_array->get_m_lines()[cache_index]->get_line_fill_source() == PREFETCH) {
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_hits_by_prefetches++;
+      }
+      else {
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_hits_by_demand_load++;
+      }
+    }
+    else if (access_status == HIT_RESERVED) {
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_pending_hits++;
+    }
+    else if (access_status == MISS || access_status == SECTOR_MISS) {
+      GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->l2_cache_rt_misses++;
+    }
+  }
+
+  // Case where prefetch hits in cache (due to demand load or previous prefetch), classify as TOO_LATE
+  if (mf->isprefetch() && access_status == HIT && m_tag_array->get_m_lines()[cache_index]->get_line_fill_source() == DEMAND_LOAD) {
+    std::map<new_addr_type, std::vector<prefetch_block_info>> &prefetch_request_tracker_map = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[mf->get_sid()]->get_m_core()[0]->get_m_rt_unit()->prefetch_request_tracker;
+    bool found = false;
+    new_addr_type mshr_addr = m_config.mshr_addr(mf->get_uncoalesced_addr());
+    for (auto &prefetch_info : prefetch_request_tracker_map[mshr_addr]) {
+      if (prefetch_info.mf_request_uid == mf->get_request_uid()) {
+        if (prefetch_info.effectiveness != UNCLASSIFIED) {
+          prefetch_info.cycle_classified = time;
+          prefetch_info.effectiveness = TOO_LATE;
+        }
+        found = true;
+        break;
+      }
+    }
+    assert(found);
+  }
+
+  // Don't think im using this at all
+  if (mf->isprefetch()) {
+    if (access_status == MISS || access_status == SECTOR_MISS)
+      mf->set_prefetch_access_status(MISS_AND_LOAD_FROM_MEM);
+    else if (access_status == HIT_RESERVED)
+      mf->set_prefetch_access_status(MISS_BUT_MSHR_MERGE);
+    else if (access_status == HIT)
+      mf->set_prefetch_access_status(HIT_IN_CACHE);
+    //else // reservation fail
+  }
+
   #ifdef DETAILED_CACHE_STATS
   // Check if this is a RT access
   if (access_status == MISS) {

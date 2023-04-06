@@ -74,6 +74,11 @@ mem_fetch::mem_fetch(const mem_access_t &access, const warp_inst_t *inst,
     m_raw_addr.sub_partition = m_original_mf->get_tlx_addr().sub_partition;
   }
   m_israytrace = false;
+  m_isprefetch = false;
+  m_prefetch_generation_cycle = 0;
+  m_prefetch_issue_cycle = 0;
+  m_prefetch_fill_cycle = 0;
+  prefetch_status = UNDEFINED;
 }
 
 mem_fetch::~mem_fetch() { 

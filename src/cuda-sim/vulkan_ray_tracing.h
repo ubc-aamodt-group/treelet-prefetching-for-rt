@@ -48,6 +48,7 @@
 #include "compiler/shader_enums.h"
 #include <fstream>
 #include <cmath>
+#include "vulkan_acceleration_structure_util.h"
 
 #define MAX(a,b) (((a)>(b))?(a):(b))
 #define MIN(a,b) (((a)<(b))?(a):(b))
@@ -95,19 +96,13 @@
 
 extern bool use_external_launcher;
 
-typedef struct float4x4 {
-  float m[4][4];
+typedef enum 
+{
+    WARP_32X1 = 0,
+    WARP_16X2,
+    WARP_8X4,
+} warp_pixel_mapping;
 
-  float4 operator*(const float4& _vec) const
-  {
-    float vec[] = {_vec.x, _vec.y, _vec.z, _vec.w};
-    float res[] = {0, 0, 0, 0};
-    for(int i = 0; i < 4; i++)
-        for(int j = 0; j < 4; j++)
-            res[i] += this->m[j][i] * vec[j];
-    return {res[0], res[1], res[2], res[3]};
-  }
-} float4x4;
 
 typedef struct RayDebugGPUData
 {
@@ -181,6 +176,33 @@ typedef struct Pixel{
         float c3;
     };
 } Pixel;
+typedef struct StackEntry {
+    uint8_t* addr;
+    bool topLevel;
+    bool leaf;
+    int size;
+
+    float worldToObject_tMultiplier;
+    GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
+    float4x4 worldToObjectMatrix;
+    float4x4 objectToWorldMatrix;
+    Ray objectRay;
+
+    StackEntry() {}
+    StackEntry(uint8_t* addr, bool topLevel, bool leaf): addr(addr), topLevel(topLevel), leaf(leaf) {}
+    StackEntry(uint8_t* addr, bool topLevel, bool leaf, int size): addr(addr), topLevel(topLevel), leaf(leaf), size(size) {}
+    StackEntry(uint8_t* addr, bool topLevel, bool leaf, float worldToObject_tMultiplier, GEN_RT_BVH_INSTANCE_LEAF instanceLeaf, float4x4 worldToObjectMatrix, float4x4 objectToWorldMatrix, Ray objectRay): addr(addr), topLevel(topLevel), leaf(leaf), worldToObject_tMultiplier(worldToObject_tMultiplier), instanceLeaf(instanceLeaf), worldToObjectMatrix(worldToObjectMatrix), objectToWorldMatrix(objectToWorldMatrix), objectRay(objectRay) {}
+
+    bool operator<(const StackEntry &o)  const
+    {
+        return addr < o.addr;
+    }
+
+    bool operator==(const StackEntry &o) const
+    {
+        return addr == o.addr && topLevel == o.topLevel && leaf == o.leaf;
+    }
+} StackEntry;
 
 // For launcher
 typedef struct storage_image_metadata
@@ -268,6 +290,22 @@ public:
     static warp_intersection_table*** intersection_table;
     static IntersectionTableType intersectionTableType;
 
+    // Treelets
+    static std::map<StackEntry, std::vector<StackEntry>> treelet_roots; // <treelet node, vector of children that belong to this treelet>, just to look up if an address is a treelet root node or not
+    static std::map<uint8_t*, std::vector<StackEntry>> treelet_roots_addr_only; // <address, vector of children that belong to this treelet>, just to look up if an address is a treelet root node or not
+    static std::map<StackEntry, std::vector<StackEntry>> treelet_child_map; // Key: a treelet root node; Value: vector of child treelets of this treelet node
+    static std::map<uint8_t*, std::vector<StackEntry>> treelet_addr_only_child_map; // Key: a treelet root node address; Value: vector of child treelets of this treelet node
+    static std::map<uint8_t*, uint8_t*> node_map_addr_only;
+
+    static std::map<uint8_t*, StackEntry> parent_map; // map <node, it's parent>
+    static std::map<uint8_t*, std::vector<StackEntry>> children_map; // map <node, it's children>
+    static std::map<uint8_t*, StackEntry> node_info; // map <node, it's info>
+    static std::map<uint8_t*, StackEntry> parent_map_device_offset; // map <node device address, it's parent's device address + info>
+    static std::map<uint8_t*, StackEntry> node_info_device_offset; // map <node device address, it's info>
+    static std::deque<std::pair<StackEntry, int>> reverse_stack; // BVH nodes in reverse order for bottom up treelet formation
+
+    static unsigned accessedDataSize;
+
 private:
     static bool mt_ray_triangle_test(float3 p0, float3 p1, float3 p2, Ray ray_properties, float* thit);
     static float3 Barycentric(float3 p, float3 a, float3 b, float3 c);
@@ -278,6 +316,20 @@ private:
 
 public:
     static void traceRay( // called by raygen shader
+                       VkAccelerationStructureKHR _topLevelAS,
+    				   uint rayFlags,
+                       uint cullMask,
+                       uint sbtRecordOffset,
+                       uint sbtRecordStride,
+                       uint missIndex,
+                       float3 origin,
+                       float Tmin,
+                       float3 direction,
+                       float Tmax,
+                       int payload,
+                       const ptx_instruction *pI,
+                       ptx_thread_info *thread);
+    static void traceRayWithTreelets( // called by raygen shader
                        VkAccelerationStructureKHR _topLevelAS,
     				   uint rayFlags,
                        uint cullMask,
@@ -361,6 +413,16 @@ public:
                                        uint32_t row_pitch_B,
                                        uint32_t filter);
     static void pass_child_addr(void *address);
+    static void parentPointerPass(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset);
+    static void createTreelets(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet);
+    static void createTreeletsBottomUp(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet);
+    static float calculateSAH(float3 lo, float3 hi);
+    static bool isTreeletRoot(StackEntry node);
+    static bool isTreeletRoot(uint8_t* addr);
+    static uint8_t* addrToTreeletID(uint8_t* addr);
+    static std::vector<StackEntry> treeletIDToChildren(StackEntry treelet_root);
+    static std::vector<StackEntry> treeletIDToChildren(uint8_t* treelet_root);
+    static void buildNodeToRootMap();
     static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS);
     static void* gpgpusim_alloc(uint32_t size);
 };

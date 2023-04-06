@@ -117,6 +117,21 @@ bool VulkanRayTracing::dumped = false;
 bool use_external_launcher = false;
 const bool dump_trace = false;
 
+// Treelets
+std::map<StackEntry, std::vector<StackEntry>> VulkanRayTracing::treelet_roots;
+std::map<uint8_t*, std::vector<StackEntry>> VulkanRayTracing::treelet_roots_addr_only;
+std::map<StackEntry, std::vector<StackEntry>> VulkanRayTracing::treelet_child_map;
+std::map<uint8_t*, std::vector<StackEntry>> VulkanRayTracing::treelet_addr_only_child_map;
+std::map<uint8_t*, uint8_t*> VulkanRayTracing::node_map_addr_only;
+
+std::map<uint8_t*, StackEntry> VulkanRayTracing::parent_map; // map <node, it's parent>
+std::map<uint8_t*, std::vector<StackEntry>> VulkanRayTracing::children_map; // map <node, it's children>
+std::map<uint8_t*, StackEntry> VulkanRayTracing::node_info; // map <node, it's info>
+std::map<uint8_t*, StackEntry> VulkanRayTracing::parent_map_device_offset; // map <node device address, it's parent's device address + info>
+std::map<uint8_t*, StackEntry> VulkanRayTracing::node_info_device_offset; // map <node device address, it's info>
+std::deque<std::pair<StackEntry, int>> VulkanRayTracing::reverse_stack; // BVH nodes in reverse order for bottom up treelet formation
+
+
 bool VulkanRayTracing::_init_ = false;
 warp_intersection_table *** VulkanRayTracing::intersection_table;
 IntersectionTableType VulkanRayTracing::intersectionTableType = IntersectionTableType::Baseline;
@@ -232,12 +247,6 @@ bool ray_box_test(float3 low, float3 high, float3 idirection, float3 origin, flo
     return (min <= max);
 }
 
-typedef struct StackEntry {
-    uint8_t* addr;
-    bool topLevel;
-    bool leaf;
-    StackEntry(uint8_t* addr, bool topLevel, bool leaf): addr(addr), topLevel(topLevel), leaf(leaf) {}
-} StackEntry;
 
 
 std::ofstream print_tree;
@@ -370,8 +379,27 @@ void VulkanRayTracing::init(uint32_t launch_width, uint32_t launch_height)
     ctx = GPGPU_Context();
     CUctx_st *context = GPGPUSim_Context(ctx);
 
-    uint32_t width = (launch_width + 31) / 32;
-    uint32_t height = launch_height;
+    uint32_t width;
+    uint32_t height;
+    warp_pixel_mapping mapping = WARP_8X4;
+    switch (mapping) {
+        case WARP_32X1:
+            width = (launch_width + 31) / 32;
+            height = launch_height;
+            break;
+        case WARP_16X2:
+            width = (launch_width + 15) / 16;
+            height = (launch_height + 1) / 2;
+            break;
+        case WARP_8X4:
+            width = (launch_width + 7) / 8;
+            height = (launch_height + 3) / 4;
+            break;
+        default:
+            abort();
+    }
+    // uint32_t width = (launch_width + 31) / 32;
+    // uint32_t height = launch_height;
 
     if(ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->m_rt_intersection_table_type == 0)
         intersectionTableType = IntersectionTableType::Baseline;
@@ -404,9 +432,1596 @@ void VulkanRayTracing::init(uint32_t launch_width, uint32_t launch_height)
 }
 
 
+bool VulkanRayTracing::isTreeletRoot(StackEntry node)
+{
+    return treelet_roots.count(node);
+}
+
+
+bool VulkanRayTracing::isTreeletRoot(uint8_t* addr)
+{
+    return treelet_roots_addr_only.count(addr);
+}
+
+
+uint8_t* VulkanRayTracing::addrToTreeletID(uint8_t* addr) // returns the treelet ID/address that a node belongs to
+{
+    assert(node_map_addr_only.count(addr));
+    return node_map_addr_only[addr];
+    // if (treelet_roots_addr_only.count(addr)) // if node is a key then its a treelet root, so return itself
+    // {
+    //     return addr;
+    // }
+    // else // node is not a treelet root
+    // {
+    //     for (auto const& root : treelet_roots_addr_only)
+    //     {
+    //         for (auto node : root.second)
+    //         {
+    //             if (addr == node.addr)
+    //                 return root.first;
+    //         }
+    //     }
+
+    //     // Node not found in treelet map
+    //     std::cout << "Node " << (void*)addr << " not found in treelet map" << std::endl;
+    //     return NULL;
+    // }
+
+}
+
+
+void VulkanRayTracing::buildNodeToRootMap()
+{
+    std::map<uint8_t*, uint8_t*> node_map; // map <node, it's treelet root>
+
+    for (auto root : treelet_roots_addr_only)
+    {
+        node_map[root.first] = root.first; // add the root to the node map;
+        for (auto node : root.second)
+        {
+            node_map[node.addr] = root.first; // add the nodes to the node map
+        }
+    }
+
+    node_map_addr_only = node_map;
+}
+
+
+std::vector<StackEntry> VulkanRayTracing::treeletIDToChildren(StackEntry treelet_root) // returns child treelet IDs of a given treelet
+{
+    return treelet_child_map[treelet_root];
+}
+
+
+std::vector<StackEntry> VulkanRayTracing::treeletIDToChildren(uint8_t* treelet_root) // returns child treelet IDs of a given treelet
+{
+    return treelet_addr_only_child_map[treelet_root];
+}
+
+
+float VulkanRayTracing::calculateSAH(float3 lo, float3 hi)
+{
+    float x = hi.x - lo.x;
+    float y = hi.y - lo.y;
+    float z = hi.z - lo.z;
+    return 2 * ( x*y + y*z + x*z );
+}
+
+
+// double VulkanRayTracing::calculateScore()
+// {
+
+// }
+
+
+void VulkanRayTracing::parentPointerPass(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset)
+{
+    std::map<uint8_t*, StackEntry> parent_map; // map <node, it's parent>
+    std::map<uint8_t*, StackEntry> node_info; // map <node, it's info>
+    std::map<uint8_t*, StackEntry> parent_map_device_offset; // map <node device address, it's parent's device address + info>
+    std::map<uint8_t*, StackEntry> node_info_device_offset; // map <node device address, it's info>
+
+    std::deque<StackEntry> stack;
+    std::deque<std::pair<StackEntry, int>> reverse_stack; // Stack entry, tree level: stores nodes in reverse order
+
+    int tree_level = 0;
+
+    GEN_RT_BVH topBVH; //TODO: test hit with world before traversal
+    GEN_RT_BVH_unpack(&topBVH, (uint8_t*)_topLevelAS);
+    parent_map[(uint8_t*)_topLevelAS] = StackEntry(nullptr, false, false, 0); // root node has no parent
+    node_info[(uint8_t*)_topLevelAS] = StackEntry((uint8_t*)_topLevelAS, true, false, GEN_RT_BVH_length * 4);
+    parent_map_device_offset[(uint8_t*)_topLevelAS + device_offset] = StackEntry(nullptr, false, false, 0); // root node has no parent
+    node_info_device_offset[(uint8_t*)_topLevelAS + device_offset] = StackEntry((uint8_t*)_topLevelAS + device_offset, true, false, GEN_RT_BVH_length * 4);
+    reverse_stack.push_front(std::make_pair(parent_map[(uint8_t*)_topLevelAS], tree_level));
+
+    tree_level++;
+
+    uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
+    stack.push_back(StackEntry(topRootAddr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
+    parent_map[topRootAddr] = StackEntry((uint8_t*)_topLevelAS, true, false, GEN_RT_BVH_length * 4);
+    node_info[topRootAddr] = StackEntry(topRootAddr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+    parent_map_device_offset[topRootAddr + device_offset] = StackEntry((uint8_t*)_topLevelAS + device_offset, true, false, GEN_RT_BVH_length * 4);
+    node_info_device_offset[topRootAddr + device_offset] = StackEntry(topRootAddr + device_offset, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+    reverse_stack.push_front(std::make_pair(parent_map[topRootAddr], tree_level));
+
+    StackEntry current_node;
+    
+    while (!stack.empty())
+    {
+        current_node = stack.front();
+        stack.pop_front();
+
+        if (current_node.topLevel && !current_node.leaf) // Top level internal node
+        {
+            struct GEN_RT_BVH_INTERNAL_NODE node;
+            GEN_RT_BVH_INTERNAL_NODE_unpack(&node, current_node.addr);
+
+            tree_level++;
+
+            uint8_t *child_addr = current_node.addr + (node.ChildOffset * 64);
+            for(int i = 0; i < 6; i++)
+            {
+                if (node.ChildSize[i] > 0)
+                {
+                    if(node.ChildType[i] != NODE_TYPE_INTERNAL)
+                    {
+                        assert(node.ChildType[i] == NODE_TYPE_INSTANCE);
+                        stack.push_front(StackEntry(child_addr, true, true));
+
+                        parent_map[child_addr] = StackEntry(current_node.addr, current_node.topLevel, current_node.leaf, current_node.size);
+                        node_info[child_addr] = StackEntry(current_node.addr, true, true, GEN_RT_BVH_INSTANCE_LEAF_length * 4);
+                        parent_map_device_offset[child_addr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
+                        node_info_device_offset[child_addr + device_offset] = StackEntry(child_addr + device_offset, true, true, GEN_RT_BVH_INSTANCE_LEAF_length * 4);
+                        reverse_stack.push_front(std::make_pair(parent_map[child_addr], tree_level));
+                    }
+                    else
+                    {
+                        stack.push_front(StackEntry(child_addr, true, false));
+
+                        parent_map[child_addr] = StackEntry(current_node.addr, current_node.topLevel, current_node.leaf, current_node.size);
+                        node_info[child_addr] = StackEntry(child_addr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+                        parent_map_device_offset[child_addr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
+                        node_info_device_offset[child_addr + device_offset] = StackEntry(child_addr + device_offset, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+                        reverse_stack.push_front(std::make_pair(parent_map[child_addr], tree_level));
+                    }
+                }
+                child_addr += node.ChildSize[i] * 64;
+            }
+        }
+        else if (current_node.topLevel && current_node.leaf) // Top level leaf node
+        {
+            uint8_t* leaf_addr = current_node.addr;
+
+            GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
+            GEN_RT_BVH_INSTANCE_LEAF_unpack(&instanceLeaf, leaf_addr);
+            
+            assert(instanceLeaf.BVHAddress != NULL);
+            GEN_RT_BVH botLevelASAddr;
+            GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
+
+            tree_level++;
+
+            uint8_t * botLevelRootAddr;
+            botLevelRootAddr = ((uint8_t *)((uint64_t)leaf_addr + instanceLeaf.BVHAddress)) + botLevelASAddr.RootNodeOffset;
+            stack.push_front(StackEntry(botLevelRootAddr, false, false));
+            parent_map[botLevelRootAddr] =StackEntry(current_node.addr, current_node.topLevel, current_node.leaf, current_node.size);
+            node_info[botLevelRootAddr] = StackEntry(botLevelRootAddr, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+            parent_map_device_offset[botLevelRootAddr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
+            node_info_device_offset[botLevelRootAddr + device_offset] = StackEntry(botLevelRootAddr + device_offset, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+            reverse_stack.push_front(std::make_pair(parent_map[botLevelRootAddr], tree_level));
+        }
+        else if (!current_node.topLevel && !current_node.leaf) // Bottom level internal node
+        {
+            struct GEN_RT_BVH_INTERNAL_NODE node;
+            GEN_RT_BVH_INTERNAL_NODE_unpack(&node, current_node.addr);
+
+            tree_level++;
+
+            uint8_t *child_addr = current_node.addr + (node.ChildOffset * 64);
+            for(int i = 0; i < 6; i++)
+            {
+                if (node.ChildSize[i] > 0)
+                {
+                    if(node.ChildType[i] != NODE_TYPE_INTERNAL)
+                    {
+                        //assert(node.ChildType[i] == NODE_TYPE_INSTANCE);
+                        stack.push_front(StackEntry(child_addr, false, true));
+
+                        parent_map[child_addr] = StackEntry(current_node.addr, current_node.topLevel, current_node.leaf, current_node.size);
+                        node_info[child_addr] = StackEntry(child_addr, false, true, GEN_RT_BVH_length * 4);
+                        parent_map_device_offset[child_addr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
+                        node_info_device_offset[child_addr + device_offset] = StackEntry(child_addr + device_offset, false, true, GEN_RT_BVH_length * 4);
+                        reverse_stack.push_front(std::make_pair(parent_map[child_addr], tree_level));
+                    }
+                    else
+                    {
+                        stack.push_front(StackEntry(child_addr, false, false));
+
+                        parent_map[child_addr] = StackEntry(current_node.addr, current_node.topLevel, current_node.leaf, current_node.size);
+                        node_info[child_addr] = StackEntry(child_addr, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+                        parent_map_device_offset[child_addr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
+                        node_info_device_offset[child_addr + device_offset] = StackEntry(child_addr + device_offset, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+                        reverse_stack.push_front(std::make_pair(parent_map[child_addr], tree_level));
+                    }
+                }
+                child_addr += node.ChildSize[i] * 64;
+            }
+        }
+        else if (!current_node.topLevel && current_node.leaf) // Bottom level leaf node
+        {
+            assert(parent_map.count(current_node.addr) != 0);
+            assert(node_info.count(current_node.addr) != 0);
+            // uint8_t* leaf_addr = current_node.addr;
+
+            // struct GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR leaf_descriptor;
+            // GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(&leaf_descriptor, leaf_addr);
+            // transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR));
+
+            // if (leaf_descriptor.LeafType == TYPE_QUAD)
+            // {
+            //     parent_map[child_addr] = StackEntry(current_node.addr, current_node.topLevel, current_node.leaf, current_node.size);
+            //     node_info[child_addr] = StackEntry(child_addr, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+            //     parent_map_device_offset[child_addr + device_offset] = StackEntry(current_node.addr + device_offset, current_node.topLevel, current_node.leaf, current_node.size);
+            //     node_info_device_offset[child_addr + device_offset] = StackEntry(child_addr + device_offset, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4);
+            //     //GEN_RT_BVH_QUAD_LEAF_length
+            // }
+            // else
+            // {
+            //     //GEN_RT_BVH_PROCEDURAL_LEAF_length
+            // }
+        }
+        else
+        {
+            assert(0);
+        }
+    }
+
+
+    // Build a map to query a list of child nodes given a parent node
+    std::map<uint8_t*, std::vector<StackEntry>> children_map;
+    for (auto node : parent_map)
+    {
+        if (node.second.addr != 0)
+        {
+            children_map[node.second.addr].push_back(node_info[node.first]);
+        }
+    }
+
+    VulkanRayTracing::parent_map = parent_map;
+    VulkanRayTracing::children_map = children_map;
+    VulkanRayTracing::node_info = node_info;
+    VulkanRayTracing::parent_map_device_offset = parent_map_device_offset;
+    VulkanRayTracing::node_info_device_offset = node_info_device_offset;
+    VulkanRayTracing::reverse_stack = reverse_stack;
+
+    std::cout << "Parent Pointer Pass  and Reverse Stack Done" << std::endl;
+
+    // for (auto node : node_info)
+    // {
+    //     printf("Node: 0x%x Parent: 0x%x Size: %d\n", node.first, parent_map[node.first].addr, node.second.size);
+    // }
+}
+
+
+void VulkanRayTracing::createTreeletsBottomUp(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet)
+{
+    int remaining_bytes = maxBytesPerTreelet;
+    std::map<StackEntry, std::vector<StackEntry>> completed_treelet_roots; // <address, list of nodes in treelet>
+
+    StackEntry current_treelet_root;
+
+    while (!reverse_stack.empty())
+    {
+        StackEntry current_node = reverse_stack.front().first;
+        int current_tree_level = reverse_stack.front().second;
+        reverse_stack.pop_front();
+
+        bool keep_searching = true;
+        std::vector<StackEntry> nodes_in_current_treelet;
+        if (remaining_bytes >= current_node.size)
+        {
+            // Subtract current node size from remaining bytes
+            remaining_bytes -= current_node.size;
+            nodes_in_current_treelet.push_back(current_node);
+
+            // Set current_node as the temporary treelet root
+            current_treelet_root = current_node;
+        }
+        else
+        {
+            // Current treelet is full, add it to the list of completed treelets
+            completed_treelet_roots[current_treelet_root] = nodes_in_current_treelet;
+            keep_searching = false;
+            remaining_bytes = maxBytesPerTreelet;
+        }
+
+        // Check parent of current_node
+        while (remaining_bytes >= 0 && keep_searching)
+        {
+            // Check if current_node has a parent node
+            StackEntry parent_node = parent_map[current_node.addr];
+            if (parent_node.addr != nullptr)
+            {
+                int parent_node_size = parent_node.size;
+                int children_sizes = 0;
+
+                for (auto child : children_map[parent_node.addr])
+                {
+                    if (child.addr != current_node.addr) // find the size of all children except the current node since the current node is already accounted for above
+                        children_sizes += child.size;
+                }
+
+                if (remaining_bytes >= (parent_node_size + children_sizes))
+                {
+                    // Subtract parent node size from remaining bytes
+                    remaining_bytes -= (parent_node_size + children_sizes);
+                
+                    // Set current_node as the new temporary treelet root
+                    current_treelet_root = parent_node;
+
+                    // Add nodes to the current treelet
+                    nodes_in_current_treelet.push_back(parent_node);
+                    for (auto child : children_map[parent_node.addr])
+                    {
+                        if (child.addr != current_node.addr)
+                            nodes_in_current_treelet.push_back(child);
+                    }
+
+                    // Remove the other children and the parent node from the stack
+                    for (auto it = reverse_stack.begin(); it != reverse_stack.end(); it++)
+                    {
+                        if (it->first.addr == parent_node.addr)
+                        {
+                            reverse_stack.erase(it);
+                            break;
+                        }
+                    }
+
+                    for (auto child : children_map[parent_node.addr])
+                    {
+                        for (auto it = reverse_stack.begin(); it != reverse_stack.end(); it++)
+                        {
+                            if (it->first.addr == child.addr)
+                            {
+                                reverse_stack.erase(it);
+                                break;
+                            }
+                        }
+                    }
+
+                    // Set current_node to the parent node
+                    current_node = parent_node;
+                }
+                else
+                {
+                    // Current treelet is full, add it to the list of completed treelets
+                    completed_treelet_roots[current_treelet_root] = nodes_in_current_treelet;
+                    keep_searching = false;
+                    remaining_bytes = maxBytesPerTreelet;
+                }
+            }
+            else
+            {
+                completed_treelet_roots[current_treelet_root] = nodes_in_current_treelet;
+                keep_searching = false;
+                remaining_bytes = maxBytesPerTreelet;
+                break;
+            }
+            
+        }
+        
+
+
+        // Check if parent fits in remaining bytes
+
+    }
+}
+
+
+void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet)
+{
+    unsigned total_bvh_size = 0;
+    int remaining_bytes = maxBytesPerTreelet;
+    std::map<StackEntry, std::vector<StackEntry>> completed_treelet_roots; // <address, placeholder>, just to look up if an address is a treelet root node or not
+    std::map<uint8_t*, std::vector<StackEntry>> completed_treelet_roots_addr_only; // <address, placeholder>, just to look up if an address is a treelet root node or not
+
+    std::map<StackEntry, std::vector<StackEntry>> treelet_root_child_map;
+    std::map<uint8_t*, std::vector<StackEntry>> treelet_root_addr_only_child_map; // this shows which treelet roots are connected to other treelet roots, to see the parent child relationship between treelet roots?
+
+    std::deque<StackEntry> treelet_roots_pending_work_queue;
+    std::deque<float> treelet_roots_pending_work_queue_sah;
+    std::deque<int> treelet_roots_pending_work_queue_nodesize;
+
+    std::deque<StackEntry> stack; // currently_considered_nodes
+    std::deque<float> sah_stack; // records the SAH of currently_considered_nodes
+    std::deque<int> nodesize_stack; //records node size of currently_considered_nodes
+
+    std::vector<StackEntry> nodes_in_current_treelet; // list of nodes that belong to the current treelet
+
+    unsigned total_nodes_accessed = 0;
+    std::map<uint8_t*, unsigned> tree_level_map;
+
+    // Start with top root node
+    treelet_roots_pending_work_queue.push_back(StackEntry((uint8_t*)_topLevelAS, true, false, GEN_RT_BVH_length * 4));
+    treelet_roots_pending_work_queue_sah.push_back(1.0);
+    treelet_roots_pending_work_queue_nodesize.push_back(GEN_RT_BVH_length * 4 + GEN_RT_BVH_INTERNAL_NODE_length * 4);
+
+    GEN_RT_BVH topBVH; //TODO: test hit with world before traversal
+    GEN_RT_BVH_unpack(&topBVH, (uint8_t*)_topLevelAS);
+    remaining_bytes -= GEN_RT_BVH_length * 4; //_topLevelAS
+    assert(remaining_bytes >= 0);
+    total_bvh_size += GEN_RT_BVH_length * 4;
+    nodes_in_current_treelet.push_back(StackEntry((uint8_t*)_topLevelAS, true, false, GEN_RT_BVH_length * 4));
+
+    uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
+    stack.push_back(StackEntry(topRootAddr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
+    sah_stack.push_back(1.0); // placeholder
+    nodesize_stack.push_back(GEN_RT_BVH_INTERNAL_NODE_length * 4);
+    tree_level_map[topRootAddr] = 1;
+
+    while (!treelet_roots_pending_work_queue.empty())
+    {
+        StackEntry next_node(NULL, false, false);
+        uint8_t *node_addr = NULL;
+        uint8_t *next_node_addr = NULL;
+        float node_sah = -1.0;
+        float next_node_sah = -1.0;
+        int node_size = -1;
+        int next_node_size = -1;
+
+        next_node = stack.front();
+        next_node_addr = stack.front().addr;
+        stack.pop_front();
+
+        next_node_sah = sah_stack.front();
+        sah_stack.pop_front();
+
+        next_node_size = nodesize_stack.front();
+        nodesize_stack.pop_front();
+
+        while (next_node_addr > 0)
+        {
+            if (next_node_addr > 0 && next_node.topLevel && !next_node.leaf)
+            {
+                node_addr = next_node_addr;
+                next_node_addr = NULL;
+                struct GEN_RT_BVH_INTERNAL_NODE node;
+                GEN_RT_BVH_INTERNAL_NODE_unpack(&node, node_addr);
+                remaining_bytes -= GEN_RT_BVH_INTERNAL_NODE_length * 4;
+                assert(remaining_bytes >= 0);
+                total_bvh_size += GEN_RT_BVH_INTERNAL_NODE_length * 4;
+                nodes_in_current_treelet.push_back(next_node);
+                total_nodes_accessed++;
+
+                for(int i = 0; i < 6; i++)
+                {
+                    if (node.ChildSize[i] > 0)
+                    {
+                        // Calculating children bounds
+                        float3 lo, hi;
+                        set_child_bounds(&node, i, &lo, &hi);
+
+                        float child_sah = calculateSAH(lo, hi);
+                        sah_stack.push_back(child_sah);
+
+                        // std::cout << "node " << (void*) node_addr << ", child number " << i << ", ";
+                        // std::cout << "lo = (" << lo.x << ", " << lo.y << ", " << lo.z << "), ";
+                        // std::cout << "hi = (" << hi.x << ", " << hi.y << ", " << hi.z << "), SAH = " << child_sah << std::endl;
+                    }
+                    else
+                    {
+                        // std::cout << "No children in node " << (void*) node_addr << std::endl;
+                    }
+                }
+
+                uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
+                for(int i = 0; i < 6; i++)
+                {
+                    if (node.ChildSize[i] > 0)
+                    {
+                        if(node.ChildType[i] != NODE_TYPE_INTERNAL)
+                        {
+                            assert(node.ChildType[i] == NODE_TYPE_INSTANCE); // top level leaf
+                            stack.push_back(StackEntry(child_addr, true, true, GEN_RT_BVH_INSTANCE_LEAF_length * 4));
+                            nodesize_stack.push_back(GEN_RT_BVH_INSTANCE_LEAF_length * 4 + GEN_RT_BVH_length * 4); // reason for adding GEN_RT_BVH_length * 4 is because the 2 nodes are traversed back to back
+                            assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                            tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
+                        }
+                        else
+                        {
+                            stack.push_back(StackEntry(child_addr, true, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
+                            nodesize_stack.push_back(GEN_RT_BVH_INTERNAL_NODE_length * 4);
+                            assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                            tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
+                        }
+                    }
+                    child_addr += node.ChildSize[i] * 64;
+                }
+            }
+            // traverse top level leaf nodes
+            else if (next_node_addr > 0 && next_node.topLevel && next_node.leaf)
+            {
+                //assert(stack.front().topLevel);
+
+                // uint8_t* leaf_addr = stack.front().addr;
+                // stack.pop_front();
+                // float leaf_sah = sah_stack.front();
+                // sah_stack.pop_front();
+                // int leaf_nodesize = nodesize_stack.front();
+                // nodesize_stack.pop_front();
+
+                uint8_t* leaf_addr = next_node_addr;
+                float leaf_sah = next_node_sah;
+                int leaf_nodesize = next_node_size;
+
+                GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
+                GEN_RT_BVH_INSTANCE_LEAF_unpack(&instanceLeaf, leaf_addr);
+                remaining_bytes -= GEN_RT_BVH_INSTANCE_LEAF_length * 4;
+                assert(remaining_bytes >= 0);
+                total_bvh_size += GEN_RT_BVH_INSTANCE_LEAF_length * 4;
+                nodes_in_current_treelet.push_back(next_node);
+                total_nodes_accessed++;
+
+                float4x4 worldToObjectMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.WorldToObjectm00);
+                float4x4 objectToWorldMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.ObjectToWorldm00);
+
+                assert(instanceLeaf.BVHAddress != NULL);
+                GEN_RT_BVH botLevelASAddr;
+                GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
+                remaining_bytes -= GEN_RT_BVH_length * 4;
+                nodes_in_current_treelet.push_back(StackEntry((uint8_t *)(leaf_addr + instanceLeaf.BVHAddress), true, true, GEN_RT_BVH_length * 4));
+                assert(remaining_bytes >= 0);
+                total_bvh_size += GEN_RT_BVH_length * 4;
+
+                // std::ofstream offsetfile;
+                // offsetfile.open("offsets.txt", std::ios::app);
+                // offsetfile << (int64_t)instanceLeaf.BVHAddress << std::endl;
+
+                // std::ofstream leaf_addr_file;
+                // leaf_addr_file.open("leaf.txt", std::ios::app);
+                // leaf_addr_file << (int64_t)((uint64_t)leaf_addr - (uint64_t)_topLevelAS) << std::endl;
+
+                uint8_t * botLevelRootAddr = ((uint8_t *)(leaf_addr + instanceLeaf.BVHAddress)) + botLevelASAddr.RootNodeOffset;
+                stack.push_back(StackEntry(botLevelRootAddr, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
+                sah_stack.push_back(1.0);
+                nodesize_stack.push_back(GEN_RT_BVH_INTERNAL_NODE_length * 4);
+                assert(tree_level_map.find(leaf_addr) != tree_level_map.end());
+                tree_level_map[botLevelRootAddr] = tree_level_map[leaf_addr];
+            }
+            // traverse bottom level tree
+            else if (next_node_addr > 0 && !next_node.topLevel && !next_node.leaf)
+            {
+                // uint8_t* node_addr = NULL;
+                // uint8_t* next_node_addr = stack.front().addr;
+                // stack.pop_front();
+                
+
+                // traverse bottom level internal nodes
+                node_addr = next_node_addr;
+                next_node_addr = NULL;
+
+                // if(node_addr == *(++path.rbegin()))
+                //     printf("this is where things go wrong\n");
+
+                struct GEN_RT_BVH_INTERNAL_NODE node;
+                GEN_RT_BVH_INTERNAL_NODE_unpack(&node, node_addr);
+                remaining_bytes -= GEN_RT_BVH_INTERNAL_NODE_length * 4;
+                assert(remaining_bytes >= 0);
+                total_bvh_size += GEN_RT_BVH_INTERNAL_NODE_length * 4;
+                nodes_in_current_treelet.push_back(next_node);
+                total_nodes_accessed++;
+
+                // if (debugTraversal)
+                // {
+                //     traversalFile << "traversing bot level internal node " << (void *)node_addr << "\n";
+                // }
+
+                // bool child_hit[6];
+                // float thit[6];
+                for(int i = 0; i < 6; i++)
+                {
+                    if (node.ChildSize[i] > 0)
+                    {
+                        // float3 idir = calculate_idir(objectRay.get_direction()); //TODO: this works wierd if one of ray dimensions is 0
+                        float3 lo, hi;
+                        set_child_bounds(&node, i, &lo, &hi);
+
+                        float child_sah = calculateSAH(lo, hi);
+                        sah_stack.push_back(child_sah);
+
+                        // std::cout << "node " << (void*) node_addr << ", child number " << i << ", ";
+                        // std::cout << "lo = (" << lo.x << ", " << lo.y << ", " << lo.z << "), ";
+                        // std::cout << "hi = (" << hi.x << ", " << hi.y << ", " << hi.z << "), SAH = " << child_sah << std::endl;
+                    }
+                    else
+                    {
+                        // std::cout << "No children in node " << (void*) node_addr << std::endl;
+                    }
+                }
+
+                uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
+                for(int i = 0; i < 6; i++)
+                {
+                    if(node.ChildSize[i] > 0)
+                    {
+                        // if (debugTraversal)
+                        // {
+                        //     traversalFile << "add child node " << (void *)child_addr << ", child number " << i << ", type " << node.ChildType[i] << ", to stack" << std::endl;
+                        // }
+
+                        if(node.ChildType[i] != NODE_TYPE_INTERNAL)
+                        {
+                            //stack.push_back(StackEntry(child_addr, false, true, GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4 + GEN_RT_BVH_length * 4));
+                            //nodesize_stack.push_back(GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4 + GEN_RT_BVH_length * 4); // reason for adding GEN_RT_BVH_length * 4 is because the 2 nodes are traversed back to back
+                            stack.push_back(StackEntry(child_addr, false, true, GEN_RT_BVH_length * 4));
+                            nodesize_stack.push_back(GEN_RT_BVH_length * 4); // both leaf descriptor and quad/procedural leaf use the same addresss
+                            assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                            tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
+                        }
+                        else
+                        {
+                            stack.push_back(StackEntry(child_addr, false, false, GEN_RT_BVH_INTERNAL_NODE_length * 4));
+                            nodesize_stack.push_back(GEN_RT_BVH_INTERNAL_NODE_length * 4);
+                            assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                            tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
+                        }
+                    }
+                    child_addr += node.ChildSize[i] * 64;
+                }
+            }
+            // traverse bottom level leaf nodes
+            else if (next_node_addr > 0 && !next_node.topLevel && next_node.leaf)
+            {
+                uint8_t* leaf_addr = next_node_addr;
+                // stack.pop_front();
+                struct GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR leaf_descriptor;
+                GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(&leaf_descriptor, leaf_addr);
+                //remaining_bytes -= GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4;
+                //assert(remaining_bytes >= 0);
+                //total_bvh_size += GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4;
+                nodes_in_current_treelet.push_back(next_node);
+
+                if (leaf_descriptor.LeafType == TYPE_QUAD)
+                {
+                    struct GEN_RT_BVH_QUAD_LEAF leaf;
+                    GEN_RT_BVH_QUAD_LEAF_unpack(&leaf, leaf_addr);
+
+                    float3 p[3];
+                    for(int i = 0; i < 3; i++)
+                    {
+                        p[i].x = leaf.QuadVertex[i].X;
+                        p[i].y = leaf.QuadVertex[i].Y;
+                        p[i].z = leaf.QuadVertex[i].Z;
+                    }
+
+                    remaining_bytes -= GEN_RT_BVH_QUAD_LEAF_length * 4;
+                    assert(remaining_bytes >= 0);
+                    total_bvh_size += GEN_RT_BVH_QUAD_LEAF_length * 4;
+                    total_nodes_accessed++;
+                }
+                else
+                {
+                    struct GEN_RT_BVH_PROCEDURAL_LEAF leaf;
+                    GEN_RT_BVH_PROCEDURAL_LEAF_unpack(&leaf, leaf_addr);
+                    remaining_bytes -= GEN_RT_BVH_PROCEDURAL_LEAF_length * 4;
+                    assert(remaining_bytes >= 0);
+                    total_bvh_size += GEN_RT_BVH_PROCEDURAL_LEAF_length * 4;
+                    total_nodes_accessed++;
+                }
+            }
+
+            // Check if first node on stack fits in the treelet
+            if (remaining_bytes - nodesize_stack.front() >= 0 && !nodesize_stack.empty())
+            {
+                // If fits, pop the first node in the stack and set it as the next node to process
+                next_node = stack.front();
+                next_node_addr = stack.front().addr;
+                stack.pop_front();
+
+                next_node_sah = sah_stack.front();
+                sah_stack.pop_front();
+
+                next_node_size = nodesize_stack.front();
+                nodesize_stack.pop_front();
+
+                assert(stack.size() == sah_stack.size() && stack.size() == nodesize_stack.size());
+            }
+            else if (remaining_bytes - nodesize_stack.front() < 0 && !nodesize_stack.empty()) // Node doesn't fit in current treelet
+            {
+                // Move the first treelet node in treelet_roots_pending_work_queue to completed_treelet_roots
+                StackEntry completed_treelet = treelet_roots_pending_work_queue.front();
+                StackEntry completed_treelet_device_addr = treelet_roots_pending_work_queue.front();
+                completed_treelet_device_addr.addr += device_offset;
+                // std::cout << "Treelet root " << (void*)completed_treelet.addr << " done: size limit reached" << std::endl;
+                std::vector<StackEntry> node_list = nodes_in_current_treelet;
+                for (int i = 0; i < node_list.size(); i++)
+                {
+                    node_list[i].addr += device_offset;
+                }
+                completed_treelet_roots[completed_treelet_device_addr] = node_list;
+                completed_treelet_roots_addr_only[completed_treelet_device_addr.addr] = node_list;
+                treelet_roots_pending_work_queue.pop_front();
+                nodes_in_current_treelet.clear();
+                
+                // Add all nodes in stack to treelet_roots_pending_work_queue
+                std::vector<StackEntry> children;
+                std::vector<StackEntry> children_device_addr;
+
+                for (int i = 0; i < stack.size(); i++)
+                {
+                    treelet_roots_pending_work_queue.push_back(stack[i]);
+                    treelet_roots_pending_work_queue_sah.push_back(sah_stack[i]);
+                    treelet_roots_pending_work_queue_nodesize.push_back(nodesize_stack[i]);
+
+                    if (i != 0) // Don't add the first element which is the node itself
+                    {
+                        children.push_back(stack[i]);
+                        StackEntry tmp = stack[i];
+                        tmp.addr += device_offset;
+                        children_device_addr.push_back(tmp);
+                    }
+                }
+
+                treelet_root_child_map[completed_treelet_device_addr] = children_device_addr;
+                treelet_root_addr_only_child_map[completed_treelet_device_addr.addr ] = children_device_addr;
+
+                // Clear out the current stack and push first node in treelet_roots_pending_work_queue to the stacks
+                stack.clear();
+                sah_stack.clear();
+                nodesize_stack.clear();
+
+                stack.push_back(treelet_roots_pending_work_queue.front());
+                sah_stack.push_back(treelet_roots_pending_work_queue_sah.front());
+                nodesize_stack.push_back(treelet_roots_pending_work_queue_nodesize.front());
+
+                // Set next node to NULL
+                next_node = StackEntry(NULL, false, false);
+                next_node_addr = NULL;
+                next_node_sah = -1.0;
+                next_node_size = -1;
+
+                // Reset remaining_bytes
+                remaining_bytes = maxBytesPerTreelet;
+
+                
+            }
+            else if (nodesize_stack.empty()) // If stack is empty, current treelet is done
+            {
+                assert(stack.empty());
+                assert(sah_stack.empty());
+                assert(nodesize_stack.empty());
+
+                // Move the first treelet node in treelet_roots_pending_work_queue to completed_treelet_roots
+                StackEntry completed_treelet = treelet_roots_pending_work_queue.front();
+                StackEntry completed_treelet_device_addr = treelet_roots_pending_work_queue.front();
+                completed_treelet_device_addr.addr += device_offset;
+                // std::cout << "Treelet root " << (void*)completed_treelet.addr << " done: no more nodes to include" << std::endl;
+                std::vector<StackEntry> node_list = nodes_in_current_treelet;
+                for (int i = 0; i < node_list.size(); i++)
+                {
+                    node_list[i].addr += device_offset;
+                }
+                completed_treelet_roots[completed_treelet_device_addr] = node_list;
+                completed_treelet_roots_addr_only[completed_treelet_device_addr.addr] = node_list;
+                treelet_roots_pending_work_queue.pop_front();
+                nodes_in_current_treelet.clear();
+
+                std::vector<StackEntry> children = {};
+                treelet_root_child_map[completed_treelet_device_addr] = children;
+                treelet_root_addr_only_child_map[completed_treelet_device_addr.addr] = children;
+
+                // Set next node to NULL
+                next_node = StackEntry(NULL, false, false);
+                next_node_addr = NULL;
+                next_node_sah = -1.0;
+                next_node_size = -1;
+
+                // Reset remaining_bytes
+                remaining_bytes = maxBytesPerTreelet;
+
+                // Push first item in treelet_roots_pending_work_queue onto the stack
+                stack.clear();
+                sah_stack.clear();
+                nodesize_stack.clear();
+
+                stack.push_back(treelet_roots_pending_work_queue.front());
+                sah_stack.push_back(treelet_roots_pending_work_queue_sah.front());
+                nodesize_stack.push_back(treelet_roots_pending_work_queue_nodesize.front());
+            }
+            else
+            {
+                std::cout << "Unknown treelet case" << std::endl;
+                assert(false);
+            }
+
+            // // Check what nodes to add to the treelet given the remaining bytes
+            // // replace this with better algorithm to find what nodes to include in treelet
+            // int size_limit = remaining_bytes;
+            // int idx = 0;
+            // for (auto node_size : nodesize_stack)
+            // {
+            //     size_limit -= node_size;
+            //     if (size_limit >= 0)
+            //         idx++;
+            //     else
+            //         break;
+            // }
+
+            // // if all nodes fit, add their children to the stack, then push all their children onto the stack
+            // if (idx == stack.size())
+            // {
+            //         // Pop the first node in the stack and add its children to the stack
+            //         next_node_addr = stack.front().addr;
+            //         stack.pop_front();
+
+            //         next_node_sah = sah_stack.front();
+            //         sah_stack.pop_front();
+
+            //         next_node_size = nodesize_stack.front();
+            //         nodesize_stack.pop_front();
+
+            //         remaining_bytes -= next_node_size;
+            // }
+            // else // Not all nodes fit in the remaining bytes
+            // {
+
+            // }
+        }
+    }
+
+    // Remove dupes in completed_treelet_roots_addr_only
+    for (auto root_node : completed_treelet_roots_addr_only)
+    {
+        std::vector <StackEntry> dupe_free_node_list;
+        for (int i = 0; i < root_node.second.size(); i++)
+        {
+            bool found = false;
+            for (int j = 0; j < dupe_free_node_list.size(); j++)
+            {
+                if (root_node.second[i].addr == dupe_free_node_list[j].addr)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found)
+                dupe_free_node_list.push_back(root_node.second[i]);
+        }
+        completed_treelet_roots_addr_only[root_node.first] = dupe_free_node_list;
+    }
+
+    std::cout << "Treelet formation done" << std::endl;
+    treelet_roots = completed_treelet_roots;
+    treelet_roots_addr_only = completed_treelet_roots_addr_only;
+
+    treelet_child_map = treelet_root_child_map;
+    treelet_addr_only_child_map = treelet_root_addr_only_child_map;
+    std::cout << "Total BVH Size: " << total_bvh_size << " bytes" << std::endl;
+    std::cout << "Treelet Size: " << maxBytesPerTreelet << " bytes" << std::endl;
+    std::cout << "Treelet Count: " << treelet_roots_addr_only.size() << std::endl;
+
+    buildNodeToRootMap();
+
+    // BVH stats
+    std::map<StackEntry, int> checkdupes;
+    unsigned treesize = 0;
+    for (auto root : treelet_roots) 
+    {
+        //assert(root.first.size != 0);
+        //treesize += root.first.size;
+        //assert(!checkdupes.count(root.first));
+        checkdupes[root.first]++;
+
+        for (auto children : root.second) 
+        {
+            //assert(children.size != 0);
+            //treesize += children.size;
+            //assert(!checkdupes.count(children));
+            checkdupes[children]++;
+        }
+    }
+    unsigned dupecount = 0;
+    for (auto node : checkdupes) {
+        treesize += node.first.size;
+        if (node.second > 1) {
+            dupecount++;
+            //printf("addr: %d, top level: %d, leaf node: %d, size: %d, dupe count: %d\n", node.first.addr, node.first.topLevel, node.first.leaf, node.first.size, node.second);
+        }
+    }
+    std::cout << "Duplicate nodes: " << dupecount << std::endl;
+    std::cout << "Verified Total BVH Size: " << treesize << " bytes" << std::endl;
+    std::cout << "Node Count: " << checkdupes.size() << std::endl;
+    std::cout << "Treelet Roots: " << treelet_roots.size() << std::endl;
+
+    unsigned treesize_with_only_treelet_roots = 0;
+    for (auto root : treelet_roots) {
+        treesize_with_only_treelet_roots += root.first.size;
+    }
+    std::cout << "Tree Size With Only Treelet Roots: " << treesize_with_only_treelet_roots << " bytes" << std::endl;
+
+    // Packed size
+    std::map<StackEntry, unsigned> root_node_sizes;
+    for (auto root : treelet_roots) {
+        for (auto children : root.second) {
+            root_node_sizes[root.first] += children.size;
+        }
+    }
+    assert(treelet_roots.size() == root_node_sizes.size());
+
+    int cachelines = 0;
+    for (auto root : root_node_sizes) {
+        cachelines += (root.second + 128 - 1) / 128;
+    }
+    std::cout << "Cachelines: " << cachelines << std::endl;
+    std::cout << "Packed size: " << cachelines * 128 << "B" << std::endl;
+    std::cout << "Size expansion: " << ((double)(cachelines * 128) - (double)treesize) / (double)treesize * (double)100 << "%" << std::endl;
+}
+
+unsigned rayCount = 0;
+static unsigned VulkanRayTracing::accessedDataSize = 0;
+
+bool parentPointerPassDone = false;
+bool treeletsFormed = false;
+bool treeletsFormed2 = false;
 bool debugTraversal = false;
 bool found_AS = false;
 VkAccelerationStructureKHR topLevelAS_first = NULL;
+
+void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevelAS,
+				   uint rayFlags,
+                   uint cullMask,
+                   uint sbtRecordOffset,
+                   uint sbtRecordStride,
+                   uint missIndex,
+                   float3 origin,
+                   float Tmin,
+                   float3 direction,
+                   float Tmax,
+                   int payload,
+                   const ptx_instruction *pI,
+                   ptx_thread_info *thread)
+{
+    // std::cout << "traceRayWithTreelets" << std::endl;
+    // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
+    //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
+
+    if (!use_external_launcher && !dumped) 
+    {
+        dump_AS(VulkanRayTracing::descriptorSet, _topLevelAS);
+        std::cout << "Trace dumped" << std::endl;
+        dumped = true;
+    }
+
+    // Convert device address back to host address for func sim. This will break if the device address was modified then passed to traceRay. Should be fixable if I also record the size when I malloc then I can check the bounds of the device address.
+    uint8_t* deviceAddress = nullptr;
+    int64_t device_offset = 0;
+    if (use_external_launcher)
+    {
+        deviceAddress = (uint8_t*)_topLevelAS;
+        bool addressFound = false;
+        for (int i = 0; i < MAX_DESCRIPTOR_SETS; i++)
+        {
+            for (int j = 0; j < MAX_DESCRIPTOR_SET_BINDINGS; j++)
+            {
+                if (launcher_deviceDescriptorSets[i][j] == (void*)_topLevelAS)
+                {
+                    _topLevelAS = launcher_descriptorSets[i][j];
+                    addressFound = true;
+                    break;
+                }
+            }
+            if (addressFound)
+                break;
+        }
+        if (!addressFound)
+            abort();
+    
+        // Calculate offset between host and device for memory transactions
+        device_offset = (uint64_t)deviceAddress - (uint64_t)_topLevelAS;
+    }
+
+
+    // Parent Pointer Pass
+    if (!parentPointerPassDone)
+    {
+        parentPointerPass(_topLevelAS, device_offset);
+        parentPointerPassDone = true;
+    }
+
+    // // Create Treelets Bottom Up
+    // if (!treeletsFormed2)
+    // {
+    //     createTreeletsBottomUp(_topLevelAS, device_offset, GPGPU_Context()->the_gpgpusim->g_the_gpu->get_config().max_treelet_size); // 48*1024 aila2010 paper
+    //     treeletsFormed2 = true;
+    // }
+
+    // Form Treelets
+    if (!treeletsFormed)
+    {
+        createTreelets(_topLevelAS, device_offset, GPGPU_Context()->the_gpgpusim->g_the_gpu->get_config().max_treelet_size); // 48*1024 aila2010 paper
+        treeletsFormed = true;
+    }
+
+    
+
+    //int result = isTreeletRoot((uint8_t*)_topLevelAS); // test
+
+    // if(!found_AS)
+    // {
+    //     found_AS = true;
+    //     topLevelAS_first = _topLevelAS;
+    //     print_tree.open("bvh_tree.txt");
+    //     traverse_tree((uint8_t*)_topLevelAS);
+    //     print_tree.close();
+    // }
+    // else
+    // {
+    //     assert(topLevelAS_first != NULL);
+    //     assert(topLevelAS_first == _topLevelAS);
+    // }
+
+    Traversal_data traversal_data;
+
+    traversal_data.ray_world_direction = direction;
+    traversal_data.ray_world_origin = origin;
+    traversal_data.sbtRecordOffset = sbtRecordOffset;
+    traversal_data.sbtRecordStride = sbtRecordStride;
+    traversal_data.missIndex = missIndex;
+    traversal_data.Tmin = Tmin;
+    traversal_data.Tmax = Tmax;
+
+    std::ofstream traversalFile;
+
+    if (debugTraversal)
+    {
+        traversalFile.open("traversal.txt");
+        traversalFile << "starting traversal\n";
+        traversalFile << "origin = (" << origin.x << ", " << origin.y << ", " << origin.z << "), ";
+        traversalFile << "direction = (" << direction.x << ", " << direction.y << ", " << direction.z << "), ";
+        traversalFile << "tmin = " << Tmin << ", tmax = " << Tmax << std::endl << std::endl;
+    }
+
+
+    bool terminateOnFirstHit = rayFlags & SpvRayFlagsTerminateOnFirstHitKHRMask;
+    bool skipClosestHitShader = rayFlags & SpvRayFlagsSkipClosestHitShaderKHRMask;
+
+    std::vector<MemoryTransactionRecord> transactions;
+    std::vector<MemoryStoreTransactionRecord> store_transactions;
+
+    gpgpu_context *ctx = GPGPU_Context();
+
+    if (terminateOnFirstHit) ctx->func_sim->g_n_anyhit_rays++;
+    else ctx->func_sim->g_n_closesthit_rays++;
+
+    unsigned total_nodes_accessed = 0;
+    std::map<uint8_t*, unsigned> tree_level_map;
+    
+	// Create ray
+    rayCount++; // ray id starts from 1
+	Ray ray;
+	ray.make_ray(origin, direction, Tmin, Tmax, rayCount);
+    thread->add_ray_properties(ray);
+
+	// Set thit to max
+    float min_thit = ray.dir_tmax.w;
+    struct GEN_RT_BVH_QUAD_LEAF closest_leaf;
+    struct GEN_RT_BVH_INSTANCE_LEAF closest_instanceLeaf;    
+    float4x4 closest_worldToObject, closest_objectToWorld;
+    Ray closest_objectRay;
+    float min_thit_object;
+
+	// Get bottom-level AS
+    //uint8_t* topLevelASAddr = get_anv_accel_address((VkAccelerationStructureKHR)_topLevelAS);
+    GEN_RT_BVH topBVH; //TODO: test hit with world before traversal
+    GEN_RT_BVH_unpack(&topBVH, (uint8_t*)_topLevelAS);
+    transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)_topLevelAS + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+    ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
+    
+    uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
+
+    // Get min/max
+    if (!ctx->func_sim->g_rt_world_set) {
+        struct GEN_RT_BVH_INTERNAL_NODE node;
+        GEN_RT_BVH_INTERNAL_NODE_unpack(&node, topRootAddr);
+        for(int i = 0; i < 6; i++) {
+            if (node.ChildSize[i] > 0) {
+                float3 idir = calculate_idir(ray.get_direction()); //TODO: this works wierd if one of ray dimensions is 0
+                float3 lo, hi;
+                set_child_bounds(&node, i, &lo, &hi);
+                ctx->func_sim->g_rt_world_min = min(ctx->func_sim->g_rt_world_min, lo);
+                ctx->func_sim->g_rt_world_max = min(ctx->func_sim->g_rt_world_max, hi);
+            }
+        }
+        ctx->func_sim->g_rt_world_set = true;
+    }
+
+    uint8_t* current_treelet_root = (uint8_t*)_topLevelAS + device_offset; // the first treelet root is always the root node
+    std::list<StackEntry> current_treelet_stack;
+    std::list<StackEntry> other_treelet_stack;
+    tree_level_map[topRootAddr] = 1;
+    
+    {
+        float3 lo, hi;
+        lo.x = topBVH.BoundsMin.X;
+        lo.y = topBVH.BoundsMin.Y;
+        lo.z = topBVH.BoundsMin.Z;
+        hi.x = topBVH.BoundsMax.X;
+        hi.y = topBVH.BoundsMax.Y;
+        hi.z = topBVH.BoundsMax.Z;
+
+        float thit;
+        if(ray_box_test(lo, hi, calculate_idir(ray.get_direction()), ray.get_origin(), ray.get_tmin(), ray.get_tmax(), thit)) {
+            if (current_treelet_root == addrToTreeletID(topRootAddr + device_offset))
+                current_treelet_stack.push_back(StackEntry(topRootAddr, true, false));
+            else
+                other_treelet_stack.push_back(StackEntry(topRootAddr, true, false));
+        }
+    }
+
+    while (!current_treelet_stack.empty() || !other_treelet_stack.empty()) 
+    {
+        StackEntry current_node;
+
+        // If current_treelet_stack is empty, move the first entry in other_treelet_stack to current_treelet_stack
+        if (current_treelet_stack.empty()) 
+        {
+            assert(!other_treelet_stack.empty());
+            current_treelet_stack.push_front(other_treelet_stack.front());
+            other_treelet_stack.pop_front() ;  
+        }
+
+        current_node = current_treelet_stack.front();
+        current_treelet_stack.pop_front();
+
+        if (current_node.topLevel && !current_node.leaf) // Top level internal node
+        {
+            struct GEN_RT_BVH_INTERNAL_NODE node;
+            GEN_RT_BVH_INTERNAL_NODE_unpack(&node, current_node.addr);
+            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)current_node.addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+            ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
+            total_nodes_accessed++;
+
+            if (debugTraversal)
+            {
+                traversalFile << "traversing top level internal node " << (void *)current_node.addr;
+                traversalFile << ", child offset = " << node.ChildOffset << ", node type = " << node.NodeType;
+                traversalFile << ", child size = (" << node.ChildSize[0] << ", " << node.ChildSize[1] << ", " << node.ChildSize[2] << ", " << node.ChildSize[3] << ", " << node.ChildSize[4] << ", " << node.ChildSize[5] << ")";
+                traversalFile << ", child type = (" << node.ChildType[0] << ", " << node.ChildType[1] << ", " << node.ChildType[2] << ", " << node.ChildType[3] << ", " << node.ChildType[4] << ", " << node.ChildType[5] << ")";
+                traversalFile << std::endl;
+            }
+
+            bool child_hit[6];
+            float thit[6];
+            for(int i = 0; i < 6; i++)
+            {
+                if (node.ChildSize[i] > 0)
+                {
+                    float3 idir = calculate_idir(ray.get_direction()); //TODO: this works wierd if one of ray dimensions is 0
+                    float3 lo, hi;
+                    set_child_bounds(&node, i, &lo, &hi);
+
+                    child_hit[i] = ray_box_test(lo, hi, idir, ray.get_origin(), ray.get_tmin(), ray.get_tmax(), thit[i]);
+                    if(child_hit[i] && thit[i] >= min_thit)
+                        child_hit[i] = false;
+
+                    
+                    if (debugTraversal)
+                    {
+                        if(child_hit[i])
+                            traversalFile << "hit child number " << i << ", ";
+                        else
+                            traversalFile << "missed child number " << i << ", ";
+                        traversalFile << "lo = (" << lo.x << ", " << lo.y << ", " << lo.z << "), ";
+                        traversalFile << "hi = (" << hi.x << ", " << hi.y << ", " << hi.z << ")" << std::endl;
+                    }
+                }
+                else
+                    child_hit[i] = false;
+            }
+
+            uint8_t *child_addr = current_node.addr + (node.ChildOffset * 64);
+            for(int i = 0; i < 6; i++)
+            {
+                if(child_hit[i])
+                {
+                    if (debugTraversal)
+                    {
+                        traversalFile << "add child node " << (void *)child_addr << ", child number " << i << ", type " << node.ChildType[i] << ", to stack" << std::endl;
+                    }
+                    if(node.ChildType[i] != NODE_TYPE_INTERNAL)
+                    {
+                        assert(node.ChildType[i] == NODE_TYPE_INSTANCE);
+                        if (current_treelet_root == addrToTreeletID(child_addr + device_offset))
+                            current_treelet_stack.push_front(StackEntry(child_addr, true, true));
+                        else
+                            other_treelet_stack.push_front(StackEntry(child_addr, true, true));
+                        assert(tree_level_map.find(current_node.addr) != tree_level_map.end());
+                        tree_level_map[child_addr] = tree_level_map[current_node.addr] + 1;
+                    }
+                    else
+                    {
+                        // the if(next_node_addr == NULL) in the original shouldn't happen
+                        if (current_treelet_root == addrToTreeletID(child_addr + device_offset))
+                            current_treelet_stack.push_front(StackEntry(child_addr, true, false));
+                        else
+                            other_treelet_stack.push_front(StackEntry(child_addr, true, false));
+                        assert(tree_level_map.find(current_node.addr) != tree_level_map.end());
+                        tree_level_map[child_addr] = tree_level_map[current_node.addr] + 1;
+                    }
+                }
+                else
+                {
+                    if (debugTraversal)
+                    {
+                        traversalFile << "ignoring missed node " << (void *)child_addr << ", child number " << i << ", type " << node.ChildType[i] << std::endl;
+                    }
+                }
+                child_addr += node.ChildSize[i] * 64;
+            }
+
+            if (debugTraversal)
+            {
+                traversalFile << std::endl;
+            }
+        }
+        else if (current_node.topLevel && current_node.leaf) // Top level leaf node
+        {
+            uint8_t* leaf_addr = current_node.addr;
+
+            GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
+            GEN_RT_BVH_INSTANCE_LEAF_unpack(&instanceLeaf, leaf_addr);
+            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
+            ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
+            total_nodes_accessed++;
+
+
+            if (debugTraversal)
+            {
+                traversalFile << "traversing top level leaf node " << (void *)leaf_addr << ", instanceID = " << instanceLeaf.InstanceID << ", BVHAddress = " << instanceLeaf.BVHAddress << ", ShaderIndex = " << instanceLeaf.ShaderIndex << std::endl;
+            }
+
+
+            float4x4 worldToObjectMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.WorldToObjectm00);
+            float4x4 objectToWorldMatrix = instance_leaf_matrix_to_float4x4(&instanceLeaf.ObjectToWorldm00);
+
+            assert(instanceLeaf.BVHAddress != NULL);
+            GEN_RT_BVH botLevelASAddr;
+            GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
+            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + instanceLeaf.BVHAddress + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+            ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
+
+            if (debugTraversal)
+            {
+                traversalFile << "bot level bvh " << (void *)(leaf_addr + instanceLeaf.BVHAddress) << ", RootNodeOffset = (" << botLevelASAddr.RootNodeOffset << std::endl;
+            }
+
+            float worldToObject_tMultiplier;
+            Ray objectRay = make_transformed_ray(ray, worldToObjectMatrix, &worldToObject_tMultiplier);
+            
+            uint8_t * botLevelRootAddr ;
+            botLevelRootAddr = ((uint8_t *)((uint64_t)leaf_addr + instanceLeaf.BVHAddress)) + botLevelASAddr.RootNodeOffset;
+            if (current_treelet_root == addrToTreeletID(botLevelRootAddr + device_offset))
+                current_treelet_stack.push_front(StackEntry(botLevelRootAddr, false, false, worldToObject_tMultiplier, instanceLeaf, worldToObjectMatrix, objectToWorldMatrix, objectRay));
+            else
+                other_treelet_stack.push_front(StackEntry(botLevelRootAddr, false, false, worldToObject_tMultiplier, instanceLeaf, worldToObjectMatrix, objectToWorldMatrix, objectRay));
+            assert(tree_level_map.find(leaf_addr) != tree_level_map.end());
+            tree_level_map[botLevelRootAddr] = tree_level_map[leaf_addr];
+
+            if (debugTraversal)
+            {
+                traversalFile << "bot level root address = " << (void*)botLevelRootAddr << std::endl;
+                traversalFile << "warped ray to object coordinates, origin = (" << objectRay.get_origin().x << ", " << objectRay.get_origin().y << ", " << objectRay.get_origin().z << "), ";
+                traversalFile << "direction = (" << objectRay.get_direction().x << ", " << objectRay.get_direction().y << ", " << objectRay.get_direction().z << "), ";
+                traversalFile << "tmin = " << objectRay.get_tmin() << ", tmax = " << objectRay.get_tmax() << std::endl << std::endl;
+            }
+        }
+        else if (!current_node.topLevel && !current_node.leaf) // Bottom level internal node
+        {
+            uint8_t* next_node_addr = current_node.addr;
+            uint8_t* node_addr = next_node_addr;
+
+            struct GEN_RT_BVH_INTERNAL_NODE node;
+            GEN_RT_BVH_INTERNAL_NODE_unpack(&node, node_addr);
+            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)node_addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+            ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
+            total_nodes_accessed++;
+
+            if (debugTraversal)
+            {
+                traversalFile << "traversing bot level internal node " << (void *)node_addr;
+                traversalFile << ", child offset = " << node.ChildOffset << ", node type = " << node.NodeType;
+                traversalFile << ", child size = (" << node.ChildSize[0] << ", " << node.ChildSize[1] << ", " << node.ChildSize[2] << ", " << node.ChildSize[3] << ", " << node.ChildSize[4] << ", " << node.ChildSize[5] << ")";
+                traversalFile << ", child type = (" << node.ChildType[0] << ", " << node.ChildType[1] << ", " << node.ChildType[2] << ", " << node.ChildType[3] << ", " << node.ChildType[4] << ", " << node.ChildType[5] << ")";
+                traversalFile << std::endl;
+            }
+
+            bool child_hit[6];
+            float thit[6];
+            for(int i = 0; i < 6; i++)
+            {
+                if (node.ChildSize[i] > 0)
+                {
+                    float3 idir = calculate_idir(current_node.objectRay.get_direction()); //TODO: this works wierd if one of ray dimensions is 0
+                    float3 lo, hi;
+                    set_child_bounds(&node, i, &lo, &hi);
+
+                    child_hit[i] = ray_box_test(lo, hi, idir, current_node.objectRay.get_origin(), current_node.objectRay.get_tmin(), current_node.objectRay.get_tmax(), thit[i]);
+                    if(child_hit[i] && thit[i] >= min_thit * current_node.worldToObject_tMultiplier)
+                        child_hit[i] = false;
+
+                    if (debugTraversal)
+                    {
+                        if(child_hit[i])
+                            traversalFile << "hit child number " << i << ", ";
+                        else
+                            traversalFile << "missed child number " << i << ", ";
+                        traversalFile << "lo = (" << lo.x << ", " << lo.y << ", " << lo.z << "), ";
+                        traversalFile << "hi = (" << hi.x << ", " << hi.y << ", " << hi.z << ")" << std::endl;
+                    }
+                }
+                else
+                    child_hit[i] = false;
+            }
+
+            uint8_t *child_addr = node_addr + (node.ChildOffset * 64);
+            for(int i = 0; i < 6; i++)
+            {
+                if(child_hit[i])
+                {
+                    if (debugTraversal)
+                    {
+                        traversalFile << "add child node " << (void *)child_addr << ", child number " << i << ", type " << node.ChildType[i] << ", to stack" << std::endl;
+                    }
+
+                    if(node.ChildType[i] != NODE_TYPE_INTERNAL)
+                    {
+                        if (current_treelet_root == addrToTreeletID(child_addr + device_offset))
+                            current_treelet_stack.push_front(StackEntry(child_addr, false, true, current_node.worldToObject_tMultiplier, current_node.instanceLeaf, current_node.worldToObjectMatrix, current_node.objectToWorldMatrix, current_node.objectRay));
+                        else
+                            other_treelet_stack.push_front(StackEntry(child_addr, false, true, current_node.worldToObject_tMultiplier, current_node.instanceLeaf, current_node.worldToObjectMatrix, current_node.objectToWorldMatrix, current_node.objectRay));
+                        assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                        tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
+                    }
+                    else
+                    {
+                        // Don' think if(next_node_addr == 0) will happen
+                        if (current_treelet_root == addrToTreeletID(child_addr + device_offset))
+                            current_treelet_stack.push_front(StackEntry(child_addr, false, false, current_node.worldToObject_tMultiplier, current_node.instanceLeaf, current_node.worldToObjectMatrix, current_node.objectToWorldMatrix, current_node.objectRay));
+                        else
+                            other_treelet_stack.push_front(StackEntry(child_addr, false, false, current_node.worldToObject_tMultiplier, current_node.instanceLeaf, current_node.worldToObjectMatrix, current_node.objectToWorldMatrix, current_node.objectRay));
+                        assert(tree_level_map.find(node_addr) != tree_level_map.end());
+                        tree_level_map[child_addr] = tree_level_map[node_addr] + 1;
+                    }
+                }
+                else
+                {
+                    if (debugTraversal)
+                    {
+                        traversalFile << "ignoring missed node " << (void *)child_addr << ", child number " << i << ", type " << node.ChildType[i] << std::endl;
+                    }
+                }
+                child_addr += node.ChildSize[i] * 64;
+            }
+
+            if (debugTraversal)
+            {
+                traversalFile << std::endl;
+            }
+        }
+        else if (!current_node.topLevel && current_node.leaf) // Bottom level leaf node
+        {
+            uint8_t* leaf_addr = current_node.addr;
+
+            struct GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR leaf_descriptor;
+            GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(&leaf_descriptor, leaf_addr);
+            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR));
+            ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR)]++;
+
+            if (leaf_descriptor.LeafType == TYPE_QUAD)
+            {
+                struct GEN_RT_BVH_QUAD_LEAF leaf;
+                GEN_RT_BVH_QUAD_LEAF_unpack(&leaf, leaf_addr);
+
+                // if(leaf.PrimitiveIndex0 == 9600)
+                // {
+                //     leaf.QuadVertex[2].Z = -0.001213;
+                // }
+
+                float3 p[3];
+                for(int i = 0; i < 3; i++)
+                {
+                    p[i].x = leaf.QuadVertex[i].X;
+                    p[i].y = leaf.QuadVertex[i].Y;
+                    p[i].z = leaf.QuadVertex[i].Z;
+                }
+
+                // Triangle intersection algorithm
+                float thit;
+                bool hit = VulkanRayTracing::mt_ray_triangle_test(p[0], p[1], p[2], current_node.objectRay, &thit);
+
+                assert(leaf.PrimitiveIndex1Delta == 0);
+
+                if (debugTraversal)
+                {
+                    if(hit)
+                        traversalFile << "hit quad node " << (void *)leaf_addr << " with thit " << thit << " ";
+                    else
+                        traversalFile << "miss quad node " << leaf_addr << " ";
+                    traversalFile << "primitiveID = " << leaf.PrimitiveIndex0 << ", InstanceID = " << current_node.instanceLeaf.InstanceID << "\n";
+
+                    traversalFile << "p[0] = (" << p[0].x << ", " << p[0].y << ", " << p[0].z << ") ";
+                    traversalFile << "p[1] = (" << p[1].x << ", " << p[1].y << ", " << p[1].z << ") ";
+                    traversalFile << "p[2] = (" << p[2].x << ", " << p[2].y << ", " << p[2].z << ") ";
+                    traversalFile << "p[3] = (" << p[3].x << ", " << p[3].y << ", " << p[3].z << ")" << std::endl;
+                }
+
+                float world_thit = thit / current_node.worldToObject_tMultiplier;
+
+                //TODO: why the Tmin Tmax consition wasn't handled in the object coordinates?
+                if(hit && Tmin <= world_thit && world_thit <= Tmax && world_thit < min_thit)
+                {
+                    if (debugTraversal)
+                    {
+                        traversalFile << "quad node " << (void *)leaf_addr << ", primitiveID " << leaf.PrimitiveIndex0 << " is the closest hit. world_thit " << thit / current_node.worldToObject_tMultiplier;
+                    }
+
+                    min_thit = thit / current_node.worldToObject_tMultiplier;
+                    min_thit_object = thit;
+                    closest_leaf = leaf;
+                    closest_instanceLeaf = current_node.instanceLeaf;
+                    closest_worldToObject = current_node.worldToObjectMatrix;
+                    closest_objectToWorld = current_node.objectToWorldMatrix;
+                    closest_objectRay = current_node.objectRay;
+                    min_thit_object = thit;
+                    thread->add_ray_intersect();
+                    transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
+                    ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF_HIT)]++;
+                    total_nodes_accessed++;
+
+                    if(terminateOnFirstHit)
+                    {
+                        current_treelet_stack.clear();
+                        other_treelet_stack.clear();
+                    }
+                }
+                else {
+                    transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF));
+                    ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF)]++;
+                    total_nodes_accessed++;
+                }
+                if (debugTraversal)
+                {
+                    traversalFile << std::endl;
+                }
+            }
+            else
+            {
+                struct GEN_RT_BVH_PROCEDURAL_LEAF leaf;
+                GEN_RT_BVH_PROCEDURAL_LEAF_unpack(&leaf, leaf_addr);
+                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
+                ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PROCEDURAL_LEAF)]++;
+                total_nodes_accessed++;
+
+                uint32_t hit_group_index = current_node.instanceLeaf.InstanceContributionToHitGroupIndex;
+
+                warp_intersection_table* table = intersection_table[thread->get_ctaid().x][thread->get_ctaid().y];
+                auto intersectionTransactions = table->add_intersection(hit_group_index, thread->get_tid().x, leaf.PrimitiveIndex[0], current_node.instanceLeaf.InstanceID, pI, thread); // TODO: switch these to device addresses
+                
+                // transactions.insert(transactions.end(), intersectionTransactions.first.begin(), intersectionTransactions.first.end());
+                for(auto & newTransaction : intersectionTransactions.first)
+                {
+                    bool found = false;
+                    for(auto & transaction : transactions)
+                        if(transaction.address == newTransaction.address)
+                        {
+                            found = true;
+                            break;
+                        }
+                    if(!found)
+                        transactions.push_back(newTransaction);
+
+                }
+                store_transactions.insert(store_transactions.end(), intersectionTransactions.second.begin(), intersectionTransactions.second.end());
+            }
+        }
+        else
+        {
+            assert(0); // shouldn't happen
+        }
+    }
+
+    if (min_thit < ray.dir_tmax.w)
+    {
+        traversal_data.hit_geometry = true;
+        ctx->func_sim->g_rt_num_hits++;
+        traversal_data.closest_hit.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        traversal_data.closest_hit.geometry_index = closest_leaf.LeafDescriptor.GeometryIndex;
+        traversal_data.closest_hit.primitive_index = closest_leaf.PrimitiveIndex0;
+        traversal_data.closest_hit.instance_index = closest_instanceLeaf.InstanceID;
+        float3 intersection_point = ray.get_origin() + make_float3(ray.get_direction().x * min_thit, ray.get_direction().y * min_thit, ray.get_direction().z * min_thit);
+        float3 rayatinter = ray.at(min_thit);
+        // assert(intersection_point.x == ray.at(min_thit).x && intersection_point.y == ray.at(min_thit).y && intersection_point.z == ray.at(min_thit).z);
+        traversal_data.closest_hit.intersection_point = intersection_point;
+        traversal_data.closest_hit.worldToObjectMatrix = closest_worldToObject;
+        traversal_data.closest_hit.objectToWorldMatrix = closest_objectToWorld;
+        traversal_data.closest_hit.world_min_thit = min_thit;
+
+        float3 p[3];
+        for(int i = 0; i < 3; i++)
+        {
+            p[i].x = closest_leaf.QuadVertex[i].X;
+            p[i].y = closest_leaf.QuadVertex[i].Y;
+            p[i].z = closest_leaf.QuadVertex[i].Z;
+        }
+        float3 object_intersection_point = closest_objectRay.get_origin() + make_float3(closest_objectRay.get_direction().x * min_thit_object, closest_objectRay.get_direction().y * min_thit_object, closest_objectRay.get_direction().z * min_thit_object);
+        //closest_objectRay.at(min_thit_object);
+        float3 barycentric = Barycentric(object_intersection_point, p[0], p[1], p[2]);
+        traversal_data.closest_hit.barycentric_coordinates = barycentric;
+        thread->RT_thread_data->set_hitAttribute(barycentric, pI, thread);
+
+        // store_transactions.push_back(MemoryStoreTransactionRecord(&traversal_data, sizeof(traversal_data), StoreTransactionType::Traversal_Results));
+    }
+    else
+    {
+        traversal_data.hit_geometry = false;
+    }
+
+    memory_space *mem = thread->get_global_memory();
+    Traversal_data* device_traversal_data = (Traversal_data*) VulkanRayTracing::gpgpusim_alloc(sizeof(Traversal_data));
+    mem->write(device_traversal_data, sizeof(Traversal_data), &traversal_data, thread, pI);
+    thread->RT_thread_data->traversal_data.push_back(device_traversal_data);
+    
+    thread->set_rt_transactions(transactions);
+    thread->set_rt_store_transactions(store_transactions);
+
+    // rayCount++; // ray id starts from 1
+    printf("RayID,%d", rayCount);
+    for (auto transaction : transactions)
+    {
+        printf(",0x%x", VulkanRayTracing::addrToTreeletID((uint8_t*)transaction.address));
+        accessedDataSize += transaction.size;
+    }
+    printf("\n");
+
+    if (debugTraversal)
+    {
+        traversalFile.close();
+    }
+
+    if (total_nodes_accessed > ctx->func_sim->g_max_nodes_per_ray) {
+        ctx->func_sim->g_max_nodes_per_ray = total_nodes_accessed;
+    }
+    ctx->func_sim->g_tot_nodes_per_ray += total_nodes_accessed;
+
+    unsigned level = 0;
+    for (auto it=tree_level_map.begin(); it!=tree_level_map.end(); it++) {
+        if (it->second > level) {
+            level = it->second;
+        }
+    }
+    if (level > ctx->func_sim->g_max_tree_depth) {
+        ctx->func_sim->g_max_tree_depth = level;
+    }
+
+    // Print out the transactions
+    std::ofstream memoryTransactionsFile;
+
+    if (false)
+    {
+        memoryTransactionsFile.open("memorytransactions.txt", std::ios_base::app);
+        memoryTransactionsFile << "m_hw_tid:" << thread->get_hw_tid() << std::endl;
+        memoryTransactionsFile << "Cycle:" << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
+
+        for(auto item : transactions)
+        {
+            memoryTransactionsFile << (void *)item.address << "," << item.size << "," << (int)item.type << std::endl;
+        }
+
+        memoryTransactionsFile << std::endl;
+    }
+}
 
 void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 				   uint rayFlags,
@@ -459,6 +2074,16 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         // Calculate offset between host and device for memory transactions
         device_offset = (uint64_t)deviceAddress - (uint64_t)_topLevelAS;
     }
+
+
+    // Form Treelets
+    if (!treeletsFormed)
+    {
+        createTreelets(_topLevelAS, device_offset, GPGPU_Context()->the_gpgpusim->g_the_gpu->get_config().max_treelet_size); // 48*1024 aila2010 paper
+        treeletsFormed = true;
+    }
+
+    //int result = isTreeletRoot((uint8_t*)_topLevelAS); // test
 
     // if(!found_AS)
     // {
@@ -1024,6 +2649,23 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     if (level > ctx->func_sim->g_max_tree_depth) {
         ctx->func_sim->g_max_tree_depth = level;
     }
+
+    // Print out the transactions
+    std::ofstream memoryTransactionsFile;
+
+    if (false)
+    {
+        memoryTransactionsFile.open("memorytransactions.txt", std::ios_base::app);
+        memoryTransactionsFile << "m_hw_tid:" << thread->get_hw_tid() << std::endl;
+        memoryTransactionsFile << "Cycle:" << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << std::endl;
+
+        for(auto item : transactions)
+        {
+            memoryTransactionsFile << (void *)item.address << "," << item.size << "," << (int)item.type << std::endl;
+        }
+
+        memoryTransactionsFile << std::endl;
+    }
 }
 
 void VulkanRayTracing::endTraceRay(const ptx_instruction *pI, ptx_thread_info *thread)
@@ -1451,17 +3093,73 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
 
     dim3 blockDim = dim3(1, 1, 1);
     dim3 gridDim = dim3(1, launch_height, launch_depth);
-    if(launch_width <= 32) {
-        blockDim.x = launch_width;
-        gridDim.x = 1;
-    }
-    else {
-        blockDim.x = 32;
-        gridDim.x = launch_width / 32;
-        if(launch_width % 32 != 0)
-            gridDim.x++;
+    warp_pixel_mapping mapping = WARP_8X4;
+
+    switch (mapping) {
+        case WARP_32X1:
+            if(launch_width <= 32) {
+                blockDim.x = launch_width;
+                gridDim.x = 1;
+            }
+            else {
+                blockDim.x = 32;
+                gridDim.x = launch_width / 32;
+                if(launch_width % 32 != 0)
+                    gridDim.x++;
+            }
+            break;
+        case WARP_16X2:
+            if(launch_width <= 16) {
+                blockDim.x = launch_width;
+                gridDim.x = 1;
+            }
+            else {
+                blockDim.x = 16;
+                gridDim.x = launch_width / 16;
+                if(launch_width % 16 != 0)
+                    gridDim.x++;
+            }
+            if(launch_height <= 2) {
+                blockDim.y = launch_height;
+                gridDim.y = 1;
+            }
+            else {
+                blockDim.y = 2;
+                gridDim.y = launch_height / 2;
+                if(launch_height % 2 != 0)
+                    gridDim.y++;
+            }
+            break;
+        case WARP_8X4:
+            if(launch_width <= 8) {
+                blockDim.x = launch_width;
+                gridDim.x = 1;
+            }
+            else {
+                blockDim.x = 8;
+                gridDim.x = launch_width / 8;
+                if(launch_width % 8 != 0)
+                    gridDim.x++;
+            }
+            if(launch_height <= 4) {
+                blockDim.y = launch_height;
+                gridDim.y = 1;
+            }
+            else {
+                blockDim.y = 4;
+                gridDim.y = launch_height / 4;
+                if(launch_height % 4 != 0)
+                    gridDim.y++;
+            }
+            break;
+        default:
+            abort();
     }
     printf("gpgpusim: launch dimensions %d x %d x %d\n", gridDim.x, gridDim.y, gridDim.z);
+
+    std::cout << "\n================================ Kernel Dimensions ================================" << std::endl;
+    std::cout << "blockDim: (" << blockDim.x << ", " << blockDim.y << ", " << blockDim.z << ")" << " gridDim: (" << gridDim.x << ", " << gridDim.y << ", " << gridDim.z << ")\n" << std::endl;
+
 
     gpgpu_ptx_sim_arg_list_t args;
     // kernel_info_t *grid = ctx->api->gpgpu_cuda_ptx_sim_init_grid(

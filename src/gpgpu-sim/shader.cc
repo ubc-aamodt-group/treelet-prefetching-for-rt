@@ -1,19 +1,20 @@
-// Copyright (c) 2009-2011, Tor M. Aamodt, Wilson W.L. Fung, Ali Bakhoda,
-// George L. Yuan, Andrew Turner, Inderpreet Singh
-// The University of British Columbia
+// Copyright (c) 2009-2021, Tor M. Aamodt, Wilson W.L. Fung, Ali Bakhoda,
+// George L. Yuan, Andrew Turner, Inderpreet Singh, Vijay Kandiah, Nikos Hardavellas
+// The University of British Columbia, Northwestern University
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// Redistributions of source code must retain the above copyright notice, this
-// list of conditions and the following disclaimer.
-// Redistributions in binary form must reproduce the above copyright notice,
-// this list of conditions and the following disclaimer in the documentation
-// and/or other materials provided with the distribution. Neither the name of
-// The University of British Columbia nor the names of its contributors may be
-// used to endorse or promote products derived from this software without
-// specific prior written permission.
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer;
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution;
+// 3. Neither the names of The University of British Columbia, Northwestern 
+//    University nor the names of their contributors may be used to
+//    endorse or promote products derived from this software without specific
+//    prior written permission.
 //
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -47,6 +48,7 @@
 #include "stat-tool.h"
 #include "traffic_breakdown.h"
 #include "visualizer.h"
+#include "../cuda-sim/vulkan_ray_tracing.h"
 
 #define PRIORITIZE_MSHR_OVER_WB 1
 #define MAX(a, b) (((a) > (b)) ? (a) : (b))
@@ -59,6 +61,20 @@ mem_fetch *shader_core_mem_fetch_allocator::alloc(
   mem_fetch *mf =
       new mem_fetch(access, NULL, wr ? WRITE_PACKET_SIZE : READ_PACKET_SIZE, -1,
                     m_core_id, m_cluster_id, m_memory_config, cycle);
+  return mf;
+}
+
+mem_fetch *shader_core_mem_fetch_allocator::alloc(
+    new_addr_type addr, mem_access_type type, const active_mask_t &active_mask,
+    const mem_access_byte_mask_t &byte_mask,
+    const mem_access_sector_mask_t &sector_mask, unsigned size, bool wr,
+    unsigned long long cycle, unsigned wid, unsigned sid, unsigned tpc,
+    mem_fetch *original_mf) const {
+  mem_access_t access(type, addr, size, wr, active_mask, byte_mask, sector_mask,
+                      m_memory_config->gpgpu_ctx);
+  mem_fetch *mf = new mem_fetch(
+      access, NULL, wr ? WRITE_PACKET_SIZE : READ_PACKET_SIZE, wid, m_core_id,
+      m_cluster_id, m_memory_config, cycle, original_mf);
   return mf;
 }
 /////////////////////////////////////////////////////////////////////////////
@@ -108,7 +124,7 @@ void shader_core_ctx::create_front_pipeline() {
 
   if (m_config->sub_core_model) {
     // in subcore model, each scheduler should has its own issue register, so
-    // num scheduler = reg width
+    // ensure num scheduler = reg width
     assert(m_config->gpgpu_num_sched_per_core ==
            m_pipeline_reg[ID_OC_SP].get_size());
     assert(m_config->gpgpu_num_sched_per_core ==
@@ -127,6 +143,11 @@ void shader_core_ctx::create_front_pipeline() {
     if (m_config->gpgpu_num_rt_core_units > 0)
       assert(m_config->gpgpu_num_sched_per_core == 
              m_pipeline_reg[ID_OC_RT].get_size());
+    for (int j = 0; j < m_config->m_specialized_unit.size(); j++) {
+      if (m_config->m_specialized_unit[j].num_units > 0)
+        assert(m_config->gpgpu_num_sched_per_core ==
+               m_config->m_specialized_unit[j].id_oc_spec_reg_width);
+    }
   }
 
   m_threadState = (thread_ctx_t *)calloc(sizeof(thread_ctx_t),
@@ -175,6 +196,8 @@ void shader_core_ctx::create_schedulers() {
                 ? CONCRETE_SCHEDULER_TWO_LEVEL_ACTIVE
                 : sched_config.find("gto") != std::string::npos
                       ? CONCRETE_SCHEDULER_GTO
+                      : sched_config.find("rrr") != std::string::npos
+                            ? CONCRETE_SCHEDULER_RRR
                       : sched_config.find("old") != std::string::npos
                             ? CONCRETE_SCHEDULER_OLDEST_FIRST
                             : sched_config.find("warp_limiting") !=
@@ -203,6 +226,14 @@ void shader_core_ctx::create_schedulers() {
         break;
       case CONCRETE_SCHEDULER_GTO:
         schedulers.push_back(new gto_scheduler(
+            m_stats, this, m_scoreboard, m_simt_stack, m_simt_tables, &m_warp,
+            &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
+            &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
+            &m_pipeline_reg[ID_OC_TENSOR_CORE], &m_pipeline_reg[ID_OC_RT], m_specilized_dispatch_reg,
+            &m_pipeline_reg[ID_OC_MEM], i));
+        break;
+      case CONCRETE_SCHEDULER_RRR:
+        schedulers.push_back(new rrr_scheduler(
             m_stats, this, m_scoreboard, m_simt_stack, m_simt_tables, &m_warp,
             &m_pipeline_reg[ID_OC_SP], &m_pipeline_reg[ID_OC_DP],
             &m_pipeline_reg[ID_OC_SFU], &m_pipeline_reg[ID_OC_INT],
@@ -384,41 +415,41 @@ void shader_core_ctx::create_exec_pipeline() {
 
   // m_fu = new simd_function_unit*[m_num_function_units];
 
-  for (int k = 0; k < m_config->gpgpu_num_sp_units; k++) {
-    m_fu.push_back(new sp_unit(&m_pipeline_reg[EX_WB], m_config, this));
+  for (unsigned k = 0; k < m_config->gpgpu_num_sp_units; k++) {
+    m_fu.push_back(new sp_unit(&m_pipeline_reg[EX_WB], m_config, this, k));
     m_dispatch_port.push_back(ID_OC_SP);
     m_issue_port.push_back(OC_EX_SP);
   }
 
-  for (int k = 0; k < m_config->gpgpu_num_dp_units; k++) {
-    m_fu.push_back(new dp_unit(&m_pipeline_reg[EX_WB], m_config, this));
+  for (unsigned k = 0; k < m_config->gpgpu_num_dp_units; k++) {
+    m_fu.push_back(new dp_unit(&m_pipeline_reg[EX_WB], m_config, this, k));
     m_dispatch_port.push_back(ID_OC_DP);
     m_issue_port.push_back(OC_EX_DP);
   }
-  for (int k = 0; k < m_config->gpgpu_num_int_units; k++) {
-    m_fu.push_back(new int_unit(&m_pipeline_reg[EX_WB], m_config, this));
+  for (unsigned k = 0; k < m_config->gpgpu_num_int_units; k++) {
+    m_fu.push_back(new int_unit(&m_pipeline_reg[EX_WB], m_config, this, k));
     m_dispatch_port.push_back(ID_OC_INT);
     m_issue_port.push_back(OC_EX_INT);
   }
 
-  for (int k = 0; k < m_config->gpgpu_num_sfu_units; k++) {
-    m_fu.push_back(new sfu(&m_pipeline_reg[EX_WB], m_config, this));
+  for (unsigned k = 0; k < m_config->gpgpu_num_sfu_units; k++) {
+    m_fu.push_back(new sfu(&m_pipeline_reg[EX_WB], m_config, this, k));
     m_dispatch_port.push_back(ID_OC_SFU);
     m_issue_port.push_back(OC_EX_SFU);
   }
 
-  for (int k = 0; k < m_config->gpgpu_num_tensor_core_units; k++) {
-    m_fu.push_back(new tensor_core(&m_pipeline_reg[EX_WB], m_config, this));
+  for (unsigned k = 0; k < m_config->gpgpu_num_tensor_core_units; k++) {
+    m_fu.push_back(new tensor_core(&m_pipeline_reg[EX_WB], m_config, this, k));
     m_dispatch_port.push_back(ID_OC_TENSOR_CORE);
     m_issue_port.push_back(OC_EX_TENSOR_CORE);
   }
 
-  for (int j = 0; j < m_config->m_specialized_unit.size(); j++) {
+  for (unsigned j = 0; j < m_config->m_specialized_unit.size(); j++) {
     for (unsigned k = 0; k < m_config->m_specialized_unit[j].num_units; k++) {
       m_fu.push_back(new specialized_unit(
           &m_pipeline_reg[EX_WB], m_config, this, SPEC_UNIT_START_ID + j,
           m_config->m_specialized_unit[j].name,
-          m_config->m_specialized_unit[j].latency));
+          m_config->m_specialized_unit[j].latency, k));
       m_dispatch_port.push_back(m_config->m_specialized_unit[j].ID_OC_SPEC_ID);
       m_issue_port.push_back(m_config->m_specialized_unit[j].OC_EX_SPEC_ID);
     }
@@ -471,6 +502,10 @@ shader_core_ctx::shader_core_ctx(class gpgpu_sim *gpu,
 
   m_sid = shader_id;
   m_tpc = tpc_id;
+
+  if(get_gpu()->get_config().g_power_simulation_enabled){
+    scaling_coeffs =  get_gpu()->get_scaling_coeffs();
+  }
 
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
@@ -1138,7 +1173,7 @@ void shader_core_ctx::decode() {
     m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
     if (pI1) {
       m_stats->m_num_decoded_insn[m_sid]++;
-      if (pI1->oprnd_type == INT_OP) {
+      if ((pI1->oprnd_type == INT_OP) || (pI1->oprnd_type == UN_OP))  { //these counters get added up in mcPat to compute scheduler power
         m_stats->m_num_INTdecoded_insn[m_sid]++;
       } else if (pI1->oprnd_type == FP_OP) {
         m_stats->m_num_FPdecoded_insn[m_sid]++;
@@ -1149,7 +1184,7 @@ void shader_core_ctx::decode() {
         m_warp[m_inst_fetch_buffer.m_warp_id]->ibuffer_fill(1, pI2);
         m_warp[m_inst_fetch_buffer.m_warp_id]->inc_inst_in_pipeline();
         m_stats->m_num_decoded_insn[m_sid]++;
-        if (pI2->oprnd_type == INT_OP) {
+        if ((pI1->oprnd_type == INT_OP) || (pI1->oprnd_type == UN_OP))  { //these counters get added up in mcPat to compute scheduler power
           m_stats->m_num_INTdecoded_insn[m_sid]++;
         } else if (pI2->oprnd_type == FP_OP) {
           m_stats->m_num_FPdecoded_insn[m_sid]++;
@@ -1242,8 +1277,10 @@ void shader_core_ctx::fetch() {
               m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
           std::list<cache_event> events;
           enum cache_request_status status;
-          if (m_config->perfect_inst_const_cache)
+          if (m_config->perfect_inst_const_cache){
             status = HIT;
+            shader_cache_access_log(m_sid, INSTRUCTION, 0);
+          }
           else
             status = m_L1I->access(
                 (new_addr_type)ppc, mf,
@@ -1496,6 +1533,33 @@ void scheduler_unit::order_lrr(
   }
 }
 
+template <class T>
+void scheduler_unit::order_rrr(
+    std::vector<T> &result_list, const typename std::vector<T> &input_list,
+    const typename std::vector<T>::const_iterator &last_issued_from_input,
+    unsigned num_warps_to_add) {
+  result_list.clear();
+
+  if (m_num_issued_last_cycle > 0 || warp(m_current_turn_warp).done_exit() ||
+      warp(m_current_turn_warp).waiting()) {
+    std::vector<shd_warp_t *>::const_iterator iter =
+      (last_issued_from_input == input_list.end()) ? 
+        input_list.begin() : last_issued_from_input + 1;
+    for (unsigned count = 0; count < num_warps_to_add; ++iter, ++count) {
+      if (iter == input_list.end()) {
+      iter = input_list.begin();
+      }
+      unsigned warp_id = (*iter)->get_warp_id();
+      if (!(*iter)->done_exit() && !(*iter)->waiting()) {
+        result_list.push_back(*iter);
+        m_current_turn_warp = warp_id;
+        break;
+      }
+    }
+  } else {
+    result_list.push_back(&warp(m_current_turn_warp));
+  }
+}
 /**
  * A general function to order things in an priority-based way.
  * The core usage of the function is similar to order_lrr.
@@ -1661,28 +1725,20 @@ void scheduler_unit::cycle() {
               }
 
             } else {
-              bool sp_pipe_avail =
-                  (m_shader->m_config->gpgpu_num_sp_units > 0) &&
-                  m_sp_out->has_free(m_shader->m_config->sub_core_model, m_id);
-              bool sfu_pipe_avail =
-                  (m_shader->m_config->gpgpu_num_sfu_units > 0) &&
-                  m_sfu_out->has_free(m_shader->m_config->sub_core_model, m_id);
-              bool tensor_core_pipe_avail =
-                  (m_shader->m_config->gpgpu_num_tensor_core_units > 0) &&
-                  m_tensor_core_out->has_free(
-                      m_shader->m_config->sub_core_model, m_id);
-              bool dp_pipe_avail =
-                  (m_shader->m_config->gpgpu_num_dp_units > 0) &&
-                  m_dp_out->has_free(m_shader->m_config->sub_core_model, m_id);
-              bool int_pipe_avail =
-                  (m_shader->m_config->gpgpu_num_int_units > 0) &&
-                  m_int_out->has_free(m_shader->m_config->sub_core_model, m_id);
-
               // This code need to be refactored
               if (pI->op != TENSOR_CORE_OP && pI->op != SFU_OP &&
                   pI->op != DP_OP && !(pI->op >= SPEC_UNIT_START_ID)) {
                 bool execute_on_SP = false;
                 bool execute_on_INT = false;
+
+                bool sp_pipe_avail =
+                    (m_shader->m_config->gpgpu_num_sp_units > 0) &&
+                    m_sp_out->has_free(m_shader->m_config->sub_core_model,
+                                       m_id);
+                bool int_pipe_avail =
+                    (m_shader->m_config->gpgpu_num_int_units > 0) &&
+                    m_int_out->has_free(m_shader->m_config->sub_core_model,
+                                        m_id);
 
                 // if INT unit pipline exist, then execute ALU and INT
                 // operations on INT unit and SP-FPU on SP unit (like in Volta)
@@ -1756,6 +1812,11 @@ void scheduler_unit::cycle() {
                          (pI->op == DP_OP) &&
                          !(diff_exec_units && previous_issued_inst_exec_type ==
                                                   exec_unit_type_t::DP)) {
+                bool dp_pipe_avail =
+                    (m_shader->m_config->gpgpu_num_dp_units > 0) &&
+                    m_dp_out->has_free(m_shader->m_config->sub_core_model,
+                                       m_id);
+
                 if (dp_pipe_avail) {
                   m_shader->issue_warp(*m_dp_out, pI, active_mask, warp_id,
                                        m_id);
@@ -1771,6 +1832,11 @@ void scheduler_unit::cycle() {
                         (pI->op == SFU_OP) || (pI->op == ALU_SFU_OP)) &&
                        !(diff_exec_units && previous_issued_inst_exec_type ==
                                                 exec_unit_type_t::SFU)) {
+                bool sfu_pipe_avail =
+                    (m_shader->m_config->gpgpu_num_sfu_units > 0) &&
+                    m_sfu_out->has_free(m_shader->m_config->sub_core_model,
+                                        m_id);
+
                 if (sfu_pipe_avail) {
                   m_shader->issue_warp(*m_sfu_out, pI, active_mask, warp_id,
                                        m_id);
@@ -1782,6 +1848,11 @@ void scheduler_unit::cycle() {
               } else if ((pI->op == TENSOR_CORE_OP) &&
                          !(diff_exec_units && previous_issued_inst_exec_type ==
                                                   exec_unit_type_t::TENSOR)) {
+                bool tensor_core_pipe_avail =
+                    (m_shader->m_config->gpgpu_num_tensor_core_units > 0) &&
+                    m_tensor_core_out->has_free(
+                        m_shader->m_config->sub_core_model, m_id);
+
                 if (tensor_core_pipe_avail) {
                   m_shader->issue_warp(*m_tensor_core_out, pI, active_mask,
                                        warp_id, m_id);
@@ -1856,7 +1927,7 @@ void scheduler_unit::cycle() {
           m_last_supervised_issued = supervised_iter;
         }
       }
-
+      m_num_issued_last_cycle = issued;
       if (issued == 1)
         m_stats->single_issue_nums[m_id]++;
       else if (issued > 1)
@@ -1903,6 +1974,10 @@ bool scheduler_unit::sort_warps_by_oldest_dynamic_id(shd_warp_t *lhs,
 
 void lrr_scheduler::order_warps() {
   order_lrr(m_next_cycle_prioritized_warps, m_supervised_warps,
+            m_last_supervised_issued, m_supervised_warps.size());
+}
+void rrr_scheduler::order_warps() {
+  order_rrr(m_next_cycle_prioritized_warps, m_supervised_warps,
             m_last_supervised_issued, m_supervised_warps.size());
 }
 
@@ -2019,7 +2094,10 @@ void swl_scheduler::order_warps() {
   }
 }
 
-void shader_core_ctx::read_operands() {}
+void shader_core_ctx::read_operands() {
+  for (int i = 0; i < m_config->reg_file_port_throughput; ++i)
+    m_operand_collector.step();
+}
 
 address_type coalesced_segment(address_type addr,
                                unsigned segment_size_lg2bytes) {
@@ -2119,8 +2197,15 @@ void shader_core_ctx::execute() {
     m_fu[n]->active_lanes_in_pipeline();
     unsigned issue_port = m_issue_port[n];
     register_set &issue_inst = m_pipeline_reg[issue_port];
-    warp_inst_t **ready_reg = issue_inst.get_ready();
-    if (issue_inst.has_ready() && m_fu[n]->can_issue(**ready_reg)) {
+    unsigned reg_id;
+    bool partition_issue =
+        m_config->sub_core_model && m_fu[n]->is_issue_partitioned();
+    if (partition_issue) {
+      reg_id = m_fu[n]->get_issue_reg_id();
+    }
+    warp_inst_t **ready_reg = issue_inst.get_ready(partition_issue, reg_id);
+    if (issue_inst.has_ready(partition_issue, reg_id) &&
+        m_fu[n]->can_issue(**ready_reg)) {
       bool schedule_wb_now = !m_fu[n]->stallable();
       int resbus = -1;
       if (schedule_wb_now &&
@@ -2459,6 +2544,21 @@ void ldst_unit::L1_latency_queue_cycle() {
       } else {
         assert(status == MISS || status == HIT_RESERVED);
         l1_latency_queue[j][0] = NULL;
+        if (m_config->m_L1D_config.get_write_policy() != WRITE_THROUGH &&
+            mf_next->get_inst().is_store() &&
+            (m_config->m_L1D_config.get_write_allocate_policy() ==
+                 FETCH_ON_WRITE ||
+             m_config->m_L1D_config.get_write_allocate_policy() ==
+                 LAZY_FETCH_ON_READ) &&
+            !was_writeallocate_sent(events)) {
+          unsigned dec_ack =
+              (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
+                  ? (mf_next->get_data_size() / SECTOR_SIZE)
+                  : 1;
+          mf_next->set_reply();
+          for (unsigned i = 0; i < dec_ack; ++i) m_core->store_ack(mf_next);
+          if (!write_sent && !read_sent) delete mf_next;
+        }
       }
     }
 
@@ -2602,22 +2702,32 @@ simd_function_unit::simd_function_unit(const shader_core_config *config) {
   m_dispatch_reg = new warp_inst_t(config);
 }
 
+void simd_function_unit::issue(register_set &source_reg) {
+  bool partition_issue =
+      m_config->sub_core_model && this->is_issue_partitioned();
+  source_reg.move_out_to(partition_issue, this->get_issue_reg_id(),
+                         m_dispatch_reg);
+  occupied.set(m_dispatch_reg->latency);
+}
+
 sfu::sfu(register_set *result_port, const shader_core_config *config,
-         shader_core_ctx *core)
-    : pipelined_simd_unit(result_port, config, config->max_sfu_latency, core) {
+         shader_core_ctx *core, unsigned issue_reg_id)
+    : pipelined_simd_unit(result_port, config, config->max_sfu_latency, core,
+                          issue_reg_id) {
   m_name = "SFU";
 }
 
 tensor_core::tensor_core(register_set *result_port,
                          const shader_core_config *config,
-                         shader_core_ctx *core)
+                         shader_core_ctx *core, unsigned issue_reg_id)
     : pipelined_simd_unit(result_port, config, config->max_tensor_core_latency,
-                          core) {
+                          core, issue_reg_id) {
   m_name = "TENSOR_CORE";
 }
 
 void sfu::issue(register_set &source_reg) {
-  warp_inst_t **ready_reg = source_reg.get_ready();
+  warp_inst_t **ready_reg =
+      source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
   // m_core->incexecstat((*ready_reg));
 
   (*ready_reg)->op_pipe = SFU__OP;
@@ -2626,7 +2736,8 @@ void sfu::issue(register_set &source_reg) {
 }
 
 void tensor_core::issue(register_set &source_reg) {
-  warp_inst_t **ready_reg = source_reg.get_ready();
+  warp_inst_t **ready_reg =
+      source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
   // m_core->incexecstat((*ready_reg));
 
   (*ready_reg)->op_pipe = TENSOR_CORE__OP;
@@ -2662,7 +2773,7 @@ void sp_unit::active_lanes_in_pipeline() {
 void dp_unit::active_lanes_in_pipeline() {
   unsigned active_count = pipelined_simd_unit::get_active_lanes_in_pipeline();
   assert(active_count <= m_core->get_config()->warp_size);
-  m_core->incspactivelanes_stat(active_count);
+  //m_core->incspactivelanes_stat(active_count);
   m_core->incfuactivelanes_stat(active_count);
   m_core->incfumemactivelanes_stat(active_count);
 }
@@ -2706,34 +2817,39 @@ void rt_unit::active_lanes_in_pipeline() {
 }
 
 sp_unit::sp_unit(register_set *result_port, const shader_core_config *config,
-                 shader_core_ctx *core)
-    : pipelined_simd_unit(result_port, config, config->max_sp_latency, core) {
+                 shader_core_ctx *core, unsigned issue_reg_id)
+    : pipelined_simd_unit(result_port, config, config->max_sp_latency, core,
+                          issue_reg_id) {
   m_name = "SP ";
 }
 
 specialized_unit::specialized_unit(register_set *result_port,
                                    const shader_core_config *config,
                                    shader_core_ctx *core, unsigned supported_op,
-                                   char *unit_name, unsigned latency)
-    : pipelined_simd_unit(result_port, config, latency, core) {
+                                   char *unit_name, unsigned latency,
+                                   unsigned issue_reg_id)
+    : pipelined_simd_unit(result_port, config, latency, core, issue_reg_id) {
   m_name = unit_name;
   m_supported_op = supported_op;
 }
 
 dp_unit::dp_unit(register_set *result_port, const shader_core_config *config,
-                 shader_core_ctx *core)
-    : pipelined_simd_unit(result_port, config, config->max_dp_latency, core) {
+                 shader_core_ctx *core, unsigned issue_reg_id)
+    : pipelined_simd_unit(result_port, config, config->max_dp_latency, core,
+                          issue_reg_id) {
   m_name = "DP ";
 }
 
 int_unit::int_unit(register_set *result_port, const shader_core_config *config,
-                   shader_core_ctx *core)
-    : pipelined_simd_unit(result_port, config, config->max_int_latency, core) {
+                   shader_core_ctx *core, unsigned issue_reg_id)
+    : pipelined_simd_unit(result_port, config, config->max_int_latency, core,
+                          issue_reg_id) {
   m_name = "INT ";
 }
 
 void sp_unit ::issue(register_set &source_reg) {
-  warp_inst_t **ready_reg = source_reg.get_ready();
+  warp_inst_t **ready_reg =
+      source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
   // m_core->incexecstat((*ready_reg));
   (*ready_reg)->op_pipe = SP__OP;
   m_core->incsp_stat(m_core->get_config()->warp_size, (*ready_reg)->latency);
@@ -2741,7 +2857,8 @@ void sp_unit ::issue(register_set &source_reg) {
 }
 
 void dp_unit ::issue(register_set &source_reg) {
-  warp_inst_t **ready_reg = source_reg.get_ready();
+  warp_inst_t **ready_reg =
+      source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
   // m_core->incexecstat((*ready_reg));
   (*ready_reg)->op_pipe = DP__OP;
   m_core->incsp_stat(m_core->get_config()->warp_size, (*ready_reg)->latency);
@@ -2749,7 +2866,8 @@ void dp_unit ::issue(register_set &source_reg) {
 }
 
 void specialized_unit ::issue(register_set &source_reg) {
-  warp_inst_t **ready_reg = source_reg.get_ready();
+  warp_inst_t **ready_reg =
+      source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
   // m_core->incexecstat((*ready_reg));
   (*ready_reg)->op_pipe = SPECIALIZED__OP;
   m_core->incsp_stat(m_core->get_config()->warp_size, (*ready_reg)->latency);
@@ -2757,7 +2875,8 @@ void specialized_unit ::issue(register_set &source_reg) {
 }
 
 void int_unit ::issue(register_set &source_reg) {
-  warp_inst_t **ready_reg = source_reg.get_ready();
+  warp_inst_t **ready_reg =
+      source_reg.get_ready(m_config->sub_core_model, m_issue_reg_id);
   // m_core->incexecstat((*ready_reg));
   (*ready_reg)->op_pipe = INTP__OP;
   m_core->incsp_stat(m_core->get_config()->warp_size, (*ready_reg)->latency);
@@ -2767,7 +2886,8 @@ void int_unit ::issue(register_set &source_reg) {
 pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
                                          const shader_core_config *config,
                                          unsigned max_latency,
-                                         shader_core_ctx *core)
+                                         shader_core_ctx *core,
+                                         unsigned issue_reg_id)
     : simd_function_unit(config) {
   m_result_port = result_port;
   m_pipeline_depth = max_latency;
@@ -2775,6 +2895,7 @@ pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
   for (unsigned i = 0; i < m_pipeline_depth; i++)
     m_pipeline_reg[i] = new warp_inst_t(config);
   m_core = core;
+  m_issue_reg_id = issue_reg_id;
   active_insts_in_pipeline = 0;
 }
 
@@ -2801,7 +2922,10 @@ void pipelined_simd_unit::cycle() {
 
 void pipelined_simd_unit::issue(register_set &source_reg) {
   // move_warp(m_dispatch_reg,source_reg);
-  warp_inst_t **ready_reg = source_reg.get_ready();
+  bool partition_issue =
+      m_config->sub_core_model && this->is_issue_partitioned();
+  warp_inst_t **ready_reg =
+      source_reg.get_ready(partition_issue, m_issue_reg_id);
   m_core->incexecstat((*ready_reg));
   // source_reg.move_out_to(m_dispatch_reg);
   simd_function_unit::issue(source_reg);
@@ -2824,7 +2948,7 @@ rt_unit::rt_unit(mem_fetch_interface *icnt,
                      const shader_core_config *config,
                      shader_core_stats *stats,
                      unsigned sid, unsigned tpc)
-    : pipelined_simd_unit(NULL, config, (unsigned int)1, core) { // rt_unit::cycle() overrides the max latency hard coded here
+    : pipelined_simd_unit(NULL, config, (unsigned int)1, core, 0) { // rt_unit::cycle() overrides the max latency hard coded here
     
   // m_memory_config = mem_config;
   m_icnt = icnt;
@@ -2837,6 +2961,7 @@ rt_unit::rt_unit(mem_fetch_interface *icnt,
   m_tpc = tpc;
   
   n_warps = 0;
+  n_queued_warps = 0;
   
   m_L0_complet = new read_only_cache( "L0Complet", m_config->m_L0C_config, m_sid,
                                       get_shader_constant_cache_id(), icnt, 
@@ -2861,10 +2986,15 @@ bool rt_unit::can_issue(const warp_inst_t &inst) const {
     default:
       return false;
   }
-  if (n_warps >= (m_config->m_rt_max_warps)) return false;
+  if (m_config->m_pipelined_treelet_queue) {
+    if (n_queued_warps >= (m_config->m_rt_max_warps)) return false;
+  } else {
+    if (n_warps >= (m_config->m_rt_max_warps)) return false;
+  }
+  if (!accept_new_warps) return false;
   return m_dispatch_reg->empty() && !occupied.test(inst.latency);
 }
-        
+
 void rt_unit::issue(register_set &reg_set) {
   warp_inst_t *inst = *(reg_set.get_ready());
   inst->op_pipe = MEM__OP;
@@ -2881,6 +3011,160 @@ unsigned rt_unit::active_warps() {
   return warp_ids.size();
 }
 
+void rt_unit::sort_mem_accesses(std::deque<RTMemoryTransactionRecord> &mem_accesses, std::map<uint8_t*, int> node_access_counts_per_treelet) {
+  std::deque<RTMemoryTransactionRecord> sorted_mem_accesses;
+  // Labels each memory access to what treelet it belongs to
+  std::deque< std::pair<new_addr_type, uint8_t*> > root_tags; // pair<memory access, what treelet the mem access belongs to>
+  for (auto mem_access : mem_accesses) {
+    root_tags.push_back(std::make_pair(mem_access.address, VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address)));
+  }
+
+  // Groups each memory access that belong to the same treelet together
+  std::map< uint8_t*, std::deque<new_addr_type> > treelet_traversals; // map< treelet root, vector of mem accesses >
+  for (auto item : root_tags) {
+    treelet_traversals[item.second].push_back(item.first);
+  }
+
+  // Decide what the treelet order should be
+  if (m_config->m_sort_method == 0) { // strictly following treelet order, rearanging the accesses into the order of how the treelets were formed
+    THREAD_SORT_DPRINTF("Sort method 0: Strict treelet sort");
+    // Naive Method
+    // Step 1: Find what order the treelets are in. Eg. if accesses belong in treelet IDs 1,3,1,3,2,1,4,3 -> the treelet ordering is 1,3,2,4
+    std::deque<uint8_t*> treelet_order; // This contains what order the treelets are in
+    for (auto item : root_tags) {
+      if (find(treelet_order.begin(), treelet_order.end(), item.second) == treelet_order.end()) { // If cant find then push
+        treelet_order.push_back(item.second);
+      }
+    }
+
+    // Find the duplicate memory accesses and record them in a vector
+    std::map<new_addr_type, std::vector<RTMemoryTransactionRecord>> duplicate_addresses_map;
+    for (auto mem_access : mem_accesses) {
+      duplicate_addresses_map[mem_access.address].push_back(mem_access);
+    }
+
+    // Push the mem accesses in each treelet_order to the sorted list, in the order of the treelet, AND not how they came in the RT unit
+    for (auto treelet : treelet_order) {
+      for (auto node : VulkanRayTracing::treelet_roots_addr_only[treelet]) {
+        // if node is in mem_accesses then add it to sorted_mem_acceses
+        if (duplicate_addresses_map.count((new_addr_type)node.addr)) {
+          for (auto item : duplicate_addresses_map[(new_addr_type)node.addr]) {
+            sorted_mem_accesses.push_back(item);
+          }
+          duplicate_addresses_map.erase((new_addr_type)node.addr); // remove the entry after adding
+        }
+      }
+    }
+  }
+  else if (m_config->m_sort_method == 1) { // loosely follow treelet order
+    THREAD_SORT_DPRINTF("Sort method 1: Loose treelet sort");
+    // I think this is wrong, but somehow it still works pretty well? I just replay the original accesses in its order but group based on treelets
+    std::deque<uint8_t*> treelet_traversal_order;
+    for (auto item : root_tags) {
+      if (find(treelet_traversal_order.begin(), treelet_traversal_order.end(), item.second) == treelet_traversal_order.end()) { // If cant find then push
+        treelet_traversal_order.push_back(item.second);
+      }
+    }
+
+    for (auto treelet : treelet_traversal_order) {
+      for (auto address : treelet_traversals[treelet]) {
+        // Find the corresponding RTMemoryTransactionRecord in mem_accesses
+        RTMemoryTransactionRecord temp;
+        bool found = false;
+        for (auto access : mem_accesses) {
+          if (address == access.address) {
+            found = true;
+            temp = access;
+            break;
+          }
+        }
+        if (found) {
+          sorted_mem_accesses.push_back(temp);
+        }
+        else
+          assert(false); // should always find something
+      }
+    }
+  }
+  assert(mem_accesses.size() == sorted_mem_accesses.size());
+  mem_accesses = sorted_mem_accesses;
+
+  // old broken code (pre Oct 20)
+  // std::deque<uint8_t*> treelet_traversal_order;
+  // while (treelet_traversal_order.size() != treelet_traversals.size()) {
+  //   int max_nodes_in_treelet_traversal = 0;
+  //   uint8_t* max_treelet_traversal = NULL;
+    
+
+  //   for (auto treelet_traversal1 : treelet_traversals) {
+  //     if (find(treelet_traversal_order.begin(), treelet_traversal_order.end(), treelet_traversal1.first) != treelet_traversal_order.end()) { // if T1 is already in the order list, then move on to next node
+  //       continue;
+  //     }
+  //     bool valid_node = true;
+
+  //     for (auto treelet_traversal2 : treelet_traversals) {
+  //       if (treelet_traversal1 == treelet_traversal2) { // dont bother comparing against this node if its the same node
+  //         continue;
+  //       }
+  //       auto itr = find(treelet_traversal_order.begin(), treelet_traversal_order.end(), treelet_traversal2.first); // Checks if T2 is already in treelet_traversal_order or not
+
+  //       bool isChild = false; // Checks if T1 is T2's child
+  //       std::vector<StackEntry> treelet2_children = VulkanRayTracing::treeletIDToChildren(treelet_traversal2.first);
+  //       for (auto child : treelet2_children) {
+  //         if ((uint8_t*)treelet_traversal1.first == child.addr) {
+  //           isChild = true;
+  //           break;
+  //         }
+  //       }
+        
+  //       if (itr != treelet_traversal_order.end() && isChild || !isChild) { // switch up the if condition later to get rid of empty block
+  //         // do nothing, reverse the statement later
+  //       }
+  //       else {
+  //         valid_node = false;
+  //         break;
+  //       }
+  //     }
+
+  //     // treelet root 1 is not in any other treelet root's children list
+
+  //     // Compare T1 against the last node in the order deque
+  //     if (valid_node) {
+  //       treelet_traversal_order.push_back(treelet_traversal1.first);
+  //       // // Work on this better ordering later
+  //       // if (treelet_traversal_order.empty()) {
+  //       //   treelet_traversal_order.push_back(treelet_traversal1.first);
+  //       // }
+  //       // else {
+  //       //   if (node_access_counts_per_treelet[treelet_traversal1.first] > node_access_counts_per_treelet[treelet_traversal_order.back()]) {
+  //       //     // Check that the new node is not a child of the 
+  //       //     // Insert T1 before the last element
+  //       //     uint8_t* temp = treelet_traversal_order.back();
+  //       //     treelet_traversal_order.pop_back();
+  //       //     treelet_traversal_order.push_back(treelet_traversal1.first);
+  //       //     treelet_traversal_order.push_back(temp);
+  //       //   }
+  //       //   else {
+  //       //     treelet_traversal_order.push_back(treelet_traversal1.first); // Insert T1 to the back of the ordering
+  //       //   }
+  //       // }
+  //     }
+  //   }
+  // }
+
+  // // Create the sorted RTMemoryTransactionRecord deque
+  // std::deque<RTMemoryTransactionRecord> sorted_mem_accesses;
+  // for (auto treelet : treelet_traversal_order) {
+  //   for (auto mem_access : mem_accesses) {
+  //     if (treelet == VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address)) {
+  //       sorted_mem_accesses.push_back(mem_access);
+  //     }
+  //   }
+  // }
+  // assert(mem_accesses.size() == sorted_mem_accesses.size());
+  // mem_accesses = sorted_mem_accesses;
+}
+
 void rt_unit::cycle() {
   // Debugging roofline plot
   cacheline_count = 0;
@@ -2895,7 +3179,12 @@ void rt_unit::cycle() {
 
   // RT unit stats
   if (!pipe_reg.empty()) {
-    n_warps++;
+    if (m_config->m_pipelined_treelet_queue) {
+      n_queued_warps++;
+      WARP_QUEUE_DPRINTF("Shader %d: Queued up %d warps, Executing %d warps, Cycle %d\n", m_sid, n_queued_warps, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+    }
+    else
+      n_warps++;
     RT_DPRINTF("Shader %d: A new warp has arrived! uid: %d, warp id: %d\n", m_sid, pipe_reg.get_uid(), pipe_reg.warp_id());
     // for (unsigned i=0; i<m_config->warp_size; i++) {
     //   RT_DPRINTF("\tThread %d (%d mem): ", i, pipe_reg.mem_list_length(i));
@@ -2904,6 +3193,7 @@ void rt_unit::cycle() {
     //   }
     //   RT_DPRINTF("\n");
     // }
+    GPGPU_Context()->the_gpgpusim->g_the_gpu->issue_cycles.push_back(GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
     
     pipe_reg.set_start_cycle(current_cycle);
     pipe_reg.set_thread_end_cycle(current_cycle);
@@ -3009,6 +3299,30 @@ void rt_unit::cycle() {
         if (m_config->m_rt_use_l1d) {
           L1D->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
                           m_core->get_gpu()->gpu_tot_sim_cycle);
+
+          // Prefetch fill time
+          if (mf->isprefetch()) {
+            new_addr_type prefetch_addr = mf->get_uncoalesced_addr();
+            new_addr_type mshr_addr = L1D->get_cache_config().mshr_addr(prefetch_addr);
+            unsigned prefetch_issue_time = mf->get_prefetch_issue_cycle();
+            if (prefetch_request_tracker.count(mshr_addr)) {
+              for (auto &prefetch_info : prefetch_request_tracker[mshr_addr]) {
+                if (prefetch_info.m_prefetch_request_addr == prefetch_addr && prefetch_info.prefetch_issue_time == prefetch_issue_time) {
+                  assert(prefetch_info.mf_request_uid == mf->get_request_uid());
+                  prefetch_info.prefetch_fill_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+                  break;
+                }
+              }
+            }
+
+            // for (auto &prefetch_info : prefetch_request_tracker) {
+            //   if (prefetch_info.m_prefetch_request_addr == prefetch_addr && prefetch_info.prefetch_issue_time == prefetch_issue_time) {
+            //     assert(prefetch_info.mf_request_uid == mf->get_request_uid());
+            //     prefetch_info.prefetch_fill_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+            //     break;
+            //   }
+            // }
+          }
         }
         else {
           m_L0_complet->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
@@ -3035,8 +3349,643 @@ void rt_unit::cycle() {
   m_L0_complet->cycle();
   
   // Move new warp into collection of warps
-  if (!pipe_reg.empty()) m_current_warps[pipe_reg.get_uid()] = pipe_reg;
+  if (m_config->m_pipelined_treelet_queue) {
+    if (!pipe_reg.empty()) m_queued_warps[pipe_reg.get_uid()] = pipe_reg;
+  }
+  else {
+    if (!pipe_reg.empty()) m_current_warps[pipe_reg.get_uid()] = pipe_reg;
+  }
   m_dispatch_reg->clear();
+
+
+
+  // Execute as normal without queue but still do sorting and prefetching
+  if (m_config->m_keep_accepting_warps) {
+    if (m_config->m_treelet_sort) {
+      for (auto &warp_inst : m_current_warps) {
+        if (sorted_warp_insts[warp_inst.first] == false) {
+          for (int i = 0; i < 32; i++)
+          {
+            //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
+            std::deque<RTMemoryTransactionRecord> original_mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+            std::deque<RTMemoryTransactionRecord> sorted_mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+            
+            THREAD_SORT_DPRINTF("Inst %d thread %d before: ", warp_inst.first, i);
+            for (auto mem : original_mem_accesses) {
+              THREAD_SORT_DPRINTF("0x%x, ", mem.address);
+            }
+
+            sort_mem_accesses(sorted_mem_accesses); // TODO: need to consider node_access_counts_per_treelet
+            warp_inst.second.get_thread_info(i).RT_mem_accesses = sorted_mem_accesses; // rewrite later by passing it directly into the function
+
+            THREAD_SORT_DPRINTF("\nInst %d thread %d  after: ", warp_inst.first, i);
+            for (auto mem : warp_inst.second.get_thread_info(i).RT_mem_accesses) {
+              THREAD_SORT_DPRINTF("0x%x, ", mem.address);
+            }
+
+            bool same = true;
+            for (int j = 0; j < original_mem_accesses.size(); j++) {
+              if (original_mem_accesses[j].address != warp_inst.second.get_thread_info(i).RT_mem_accesses[j].address)
+                same = false;
+            }
+
+            if (same) {
+              THREAD_SORT_DPRINTF("same\n");
+            }
+            else {
+              THREAD_SORT_DPRINTF("different\n");
+            }
+          }
+          sorted_warp_insts[warp_inst.first] = true;
+        }
+      }
+    }
+
+    if (m_config->m_treelet_prefetch) {
+      uint8_t* prefetched_treelet_root = nullptr;
+      uint8_t* second_prefetched_treelet_root = nullptr;
+
+      // For each threads's first access, find the most popular treelet
+      std::map<uint8_t*, int> treelet_prefetch_priority;
+      for (auto warp_inst : m_current_warps) {
+        for (int i = 0; i < 32; i++) {
+          if (!warp_inst.second.get_thread_info(i).RT_mem_accesses.empty()) {
+            new_addr_type first_address = warp_inst.second.get_thread_info(i).RT_mem_accesses.front().address;
+            uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)first_address);
+            treelet_prefetch_priority[treelet_root_bin] += 1;
+          }
+        }
+      }
+
+      // Prefetch Heuristics
+      bool submit_prefetch = false; // default is to not submit any prefetches
+      int num_nodes_to_prefetch = 0;
+      if (m_config->m_treelet_prefetch_heuristic == 0) { // Prefetch Heuristic 0: Always prefetch the current most popular treelet amongst all threads in this queue
+        // Find the most popular treelet
+        int max = -1;
+        for (auto treelet_addr : treelet_prefetch_priority) {
+          if (treelet_addr.second > max) {
+            prefetched_treelet_root = treelet_addr.first;
+            max = treelet_addr.second;
+          }
+        }
+        submit_prefetch = true;
+      }
+      else if (m_config->m_treelet_prefetch_heuristic == 1) { // Prefetch Heuristic 1: Only prefetch if treelet is the most popular above a % threshold
+        // Find the most popular treelet and calculate how popular it is
+        int max = -1;
+        unsigned total_threads = 0;
+        double percentage = 0.0;
+        for (auto treelet_addr : treelet_prefetch_priority) {
+          if (treelet_addr.second > max) {
+            prefetched_treelet_root = treelet_addr.first;
+            max = treelet_addr.second;
+          }
+          total_threads += treelet_addr.second;
+        }
+
+        percentage = static_cast<double>(treelet_prefetch_priority[prefetched_treelet_root]) / static_cast<double>(total_threads);
+
+        if (percentage >= m_config->m_treelet_prefetch_threshold) {
+          if (last_prefetched_treelet != prefetched_treelet_root) {
+            TOMMY_DPRINTF("Shader %d: Cycle: %d, Treelet root 0x%x exceeds prefetch threshold with %f (%d/%d)\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, prefetched_treelet_root, percentage, treelet_prefetch_priority[prefetched_treelet_root], total_threads);
+          }
+          last_rejected_treelet = NULL;
+          submit_prefetch = true;
+        }
+        else {
+          if (prefetched_treelet_root != nullptr && last_rejected_treelet != prefetched_treelet_root) {
+            TOMMY_DPRINTF("Shader %d: Cycle: %d, Treelet root 0x%x does not exceed prefetch threshold with %f (%d/%d)\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, prefetched_treelet_root, percentage, treelet_prefetch_priority[prefetched_treelet_root], total_threads);
+            last_rejected_treelet = prefetched_treelet_root;
+          }
+          submit_prefetch = false;
+        }
+      }
+      else if (m_config->m_treelet_prefetch_heuristic == 2) { // Prefetch Heuristic 2: Prefetch a portion of the treelet based on the popularity percentage
+        // Find the most popular treelet and calculate how popular it is
+        int max = -1;
+        unsigned total_threads = 0;
+        double percentage = 0.0;
+        for (auto treelet_addr : treelet_prefetch_priority) {
+          if (treelet_addr.second > max) {
+            prefetched_treelet_root = treelet_addr.first;
+            max = treelet_addr.second;
+          }
+          total_threads += treelet_addr.second;
+        }
+
+        percentage = static_cast<double>(treelet_prefetch_priority[prefetched_treelet_root]) / static_cast<double>(total_threads);
+
+        int num_nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[prefetched_treelet_root].size();
+        num_nodes_to_prefetch = static_cast<int>((static_cast<double>(num_nodes_in_treelet) * percentage) + 0.5); // + 0.5 is for rounding
+        if (prefetched_treelet_root != nullptr && last_prefetched_treelet != prefetched_treelet_root) {
+          TOMMY_DPRINTF("Shader %d: Cycle: %d, Treelet root 0x%x popularity is %f, prefetching %d/%d nodes\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, prefetched_treelet_root, percentage, num_nodes_to_prefetch, num_nodes_in_treelet);
+        }
+        submit_prefetch = true;
+      }
+      else if (m_config->m_treelet_prefetch_heuristic == 3) { // Prefetch Heuristic 3: Prefetch the latter half of the tree? Since the first half will be handled by demand loads
+        int max = -1;
+        unsigned total_threads = 0;
+        double percentage = 0.0; // prefetch the latter half
+        for (auto treelet_addr : treelet_prefetch_priority) {
+          if (treelet_addr.second > max) {
+            prefetched_treelet_root = treelet_addr.first;
+            max = treelet_addr.second;
+          }
+          total_threads += treelet_addr.second;
+        }
+
+        percentage = static_cast<double>(treelet_prefetch_priority[prefetched_treelet_root]) / static_cast<double>(total_threads);
+
+        // The main difference is in the next stage where I add prefetches
+        int num_nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[prefetched_treelet_root].size();
+        num_nodes_to_prefetch = static_cast<int>((static_cast<double>(num_nodes_in_treelet) * percentage) + 0.5); // + 0.5 is for rounding
+        submit_prefetch = true;
+      }
+      
+      // Push treelet nodes to prefetch queue
+      if (submit_prefetch && prefetched_treelet_root != nullptr) {
+        std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[prefetched_treelet_root];
+        if (last_prefetched_treelet != prefetched_treelet_root && last_prefetched_second_treelet != prefetched_treelet_root) { // make sure we arent prefetching the same treelet over and over
+          prefetch_treelet_switches++;
+          total_cycles_between_prefetch_treelet_switch += GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle - timestamp_of_last_treelet;
+          timestamp_of_last_treelet = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+
+          int num_prefetch_nodes;
+          if (m_config->m_treelet_prefetch_heuristic == 2 || m_config->m_treelet_prefetch_heuristic == 3) {
+            num_prefetch_nodes = num_nodes_to_prefetch; // prefetch the tree partially
+          }
+          else {
+            num_prefetch_nodes = nodes_in_treelet.size(); // prefetch the whole tree
+          }
+          
+          if (num_prefetch_nodes + prefetch_mem_access_q.size() <= m_config->m_max_prefetch_queue_size) { // make sure the treelet i want to prefetch wont exceed the max prefetch queue size
+            
+            if (m_config->m_flush_prefetch_queue_on_new_treelet) { // flush prefetch queue on when there a new most popular treelet
+              TOMMY_DPRINTF("Shader %d: Clearing prefetch queue due to new treelet\n", m_sid);
+              prefetch_mem_access_q.clear();
+              prefetch_generation_cycles.clear();
+            }
+
+            TOMMY_DPRINTF("Shader %d: Add Prefetching for Treelet root 0x%x\n", m_sid, prefetched_treelet_root);
+            if (m_config->m_treelet_prefetch_heuristic == 3) {
+              for (int j = nodes_in_treelet.size() - num_prefetch_nodes; j < nodes_in_treelet.size(); j++) { // Prefetching from the middle of the treelet
+                TOMMY_DPRINTF("Shader %d: %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+                // Create the memory chunks and push to mem_access_q
+                for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
+                  prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+                  prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
+                  TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+                  prefetches_added_to_queue++;
+                }
+                TOMMY_DPRINTF("\n");
+              }
+            }
+            else { // Normal prefetching from the beginning of the treelet
+              for (int j = 0; j < num_prefetch_nodes; j++) {
+                TOMMY_DPRINTF("Shader %d: %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+                // Create the memory chunks and push to mem_access_q
+                for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
+                  prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+                  prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
+                  TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+                  prefetches_added_to_queue++;
+                }
+                TOMMY_DPRINTF("\n");
+              }
+            }
+            
+            TOMMY_DPRINTF("Shader %d: Prefetch queue entries: %d\n", m_sid, prefetch_mem_access_q.size());
+            last_prefetched_treelet = prefetched_treelet_root;
+          }
+        }
+        submit_prefetch = false;
+      }
+
+      // Prefetch the next treelet when the prefetch queue is empty
+      bool submit_second_prefetch = false;
+      if (m_config->prefetch_next_treelet_when_queue_empty) {
+        if (prefetch_mem_access_q.empty() && !m_current_warps.empty() && treelet_prefetch_priority.size() > 1) { // if prefetch queue is empty, but there are still rt warps to be processed
+          if (last_prefetched_treelet == prefetched_treelet_root && prefetched_treelet_root != nullptr) { // if the current prefetched treelet is done prefetching?
+            int max = -1;
+            //unsigned total_threads = 0;
+            //double percentage = 0.0; // prefetch the latter half
+            for (auto treelet_addr : treelet_prefetch_priority) {
+              if (treelet_addr.second > max && treelet_addr.first != last_prefetched_treelet) {
+                second_prefetched_treelet_root = treelet_addr.first;
+                max = treelet_addr.second;
+              }
+              //total_threads += treelet_addr.second;
+            }
+
+            submit_second_prefetch = true;
+          }
+        }
+
+        if (submit_second_prefetch && second_prefetched_treelet_root != nullptr) {
+          if (last_prefetched_second_treelet != second_prefetched_treelet_root) {
+            std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[second_prefetched_treelet_root];
+            for (int j = 0; j < nodes_in_treelet.size(); j++) {
+              SECOND_PREFETCH_DPRINTF("Shader %d: %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+              // Create the memory chunks and push to mem_access_q
+              for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
+                prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+                prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
+                SECOND_PREFETCH_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+                prefetches_added_to_queue++;
+              }
+              SECOND_PREFETCH_DPRINTF("\n");
+            }
+            SECOND_PREFETCH_DPRINTF("Shader %d: Prefetch queue entries: %d\n", m_sid, prefetch_mem_access_q.size());
+            last_prefetched_second_treelet = second_prefetched_treelet_root;
+          }
+          submit_second_prefetch = false;
+        }
+      }
+    }
+  }
+
+
+  // Pipelined Treelet Queue
+  if (m_config->m_pipelined_treelet_queue) {
+    // Count stalled cycles
+    if (n_queued_warps > 0 && !executing) {
+      cycles_without_dispatching++;
+      total_cycles_without_dispatching++;
+      cycles_without_dispatching_in_current_batch++;
+      if (prev_n_queued_warps != n_queued_warps)
+        cycles_without_dispatching = 0;
+    }
+
+    // Transfer warps from queue to rt unit
+    if ((n_queued_warps >= m_config->m_rt_max_warps || cycles_without_dispatching >= m_config->m_treelet_queue_wait_cycle) && !executing) { // enough warps are queued up and rt_unit is not current executing the previous batched of queued warps
+      assert(m_current_warps.empty());
+      m_current_warps = m_queued_warps; // copy warps from queue to rt unit 
+      n_warps = n_queued_warps;
+      assert(m_current_warps.size() == n_warps);
+      executing = true;
+
+      WARP_QUEUE_DPRINTF("Shader %d: Queued up %d warps and transferred to RT unit, Total delay: %d, Cycle %d\n", m_sid, n_warps, cycles_without_dispatching_in_current_batch, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+
+      m_queued_warps.clear(); // Clear out the queue
+      n_queued_warps = 0;
+
+      cycles_without_dispatching_in_current_batch = 0;
+      cycles_without_dispatching = 0;
+    }
+
+    // Sort accesses in the warps
+    if (!sorted && executing) {
+      WARP_QUEUE_DPRINTF("SM %d Sorting RT Accesses across %d warps, Cycle: %d\n", m_sid, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+
+      // Tally up all the different memory accesses from all warps
+      std::map<uint8_t*, int> node_access_counts_per_treelet;
+      for (auto warp_inst : m_current_warps)
+      {
+        for (int i = 0; i < 32; i++)
+        {
+          warp_inst_t::per_thread_info thread_info = warp_inst.second.get_thread_info(i);
+          for (auto mem_access : thread_info.RT_mem_accesses)
+          {
+            // std::cout << mem_access.address << std::endl;
+            uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address);
+            node_access_counts_per_treelet[treelet_root_bin] += 1;
+          }
+        }
+      }
+
+      // Sort each thread's bag of memory accesses
+      if (m_config->m_treelet_sort) {
+        for (auto &warp_inst : m_current_warps)
+        {
+          for (int i = 0; i < 32; i++)
+          {
+            //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
+            std::deque<RTMemoryTransactionRecord> original_mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+            std::deque<RTMemoryTransactionRecord> sorted_mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+            
+            THREAD_SORT_DPRINTF("Inst %d thread %d before: ", warp_inst.first, i);
+            for (auto mem : original_mem_accesses) {
+              THREAD_SORT_DPRINTF("0x%x, ", mem.address);
+            }
+
+            sort_mem_accesses(sorted_mem_accesses, node_access_counts_per_treelet); // TODO: need to consider node_access_counts_per_treelet
+            warp_inst.second.get_thread_info(i).RT_mem_accesses = sorted_mem_accesses; // rewrite later by passing it directly into the function
+
+            THREAD_SORT_DPRINTF("\nInst %d thread %d  after: ", warp_inst.first, i);
+            for (auto mem : warp_inst.second.get_thread_info(i).RT_mem_accesses) {
+              THREAD_SORT_DPRINTF("0x%x, ", mem.address);
+            }
+
+            bool same = true;
+            for (int j = 0; j < original_mem_accesses.size(); j++) {
+              if (original_mem_accesses[j].address != warp_inst.second.get_thread_info(i).RT_mem_accesses[j].address)
+                same = false;
+            }
+
+            if (same) {
+              THREAD_SORT_DPRINTF("same\n");
+            }
+            else {
+              THREAD_SORT_DPRINTF("different\n");
+            }
+          }
+        }
+      }
+
+      sorted = true; // Don't sort anymore until this warp buffer is cleared out
+    }
+
+    // Generate prefetch requests based on each thread's first request in all warps
+    if (m_config->m_treelet_prefetch && executing) {
+      uint8_t* prefetched_treelet_root = nullptr;
+
+      // For each threads's first access, find the most popular treelet
+      std::map<uint8_t*, int> treelet_prefetch_priority;
+      for (auto warp_inst : m_current_warps) {
+        for (int i = 0; i < 32; i++) {
+          if (!warp_inst.second.get_thread_info(i).RT_mem_accesses.empty()) {
+            new_addr_type first_address = warp_inst.second.get_thread_info(i).RT_mem_accesses.front().address;
+            uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)first_address);
+            treelet_prefetch_priority[treelet_root_bin] += 1;
+          }
+        }
+      }
+
+      // Prefetch Heuristics
+      bool submit_prefetch = false; // default is to not submit any prefetches
+      int num_nodes_to_prefetch = 0;
+
+      if (m_config->m_treelet_prefetch_heuristic == 0) { // Prefetch Heuristic 0: Always prefetch the current most popular treelet amongst all threads in this queue
+        // Find the most popular treelet
+        int max = -1;
+        for (auto treelet_addr : treelet_prefetch_priority) {
+          if (treelet_addr.second > max) {
+            prefetched_treelet_root = treelet_addr.first;
+            max = treelet_addr.second;
+          }
+        }
+        submit_prefetch = true;
+      }
+      else if (m_config->m_treelet_prefetch_heuristic == 1) { // Prefetch Heuristic 1: Only prefetch if treelet is the most popular above a % threshold
+        // Find the most popular treelet and calculate how popular it is
+        int max = -1;
+        unsigned total_threads = 0;
+        double percentage = 0.0;
+        for (auto treelet_addr : treelet_prefetch_priority) {
+          if (treelet_addr.second > max) {
+            prefetched_treelet_root = treelet_addr.first;
+            max = treelet_addr.second;
+          }
+          total_threads += treelet_addr.second;
+        }
+
+        percentage = static_cast<double>(treelet_prefetch_priority[prefetched_treelet_root]) / static_cast<double>(total_threads);
+
+        if (percentage >= m_config->m_treelet_prefetch_threshold) {
+          if (last_prefetched_treelet != prefetched_treelet_root) {
+            TOMMY_DPRINTF("Shader %d: Cycle: %d, Treelet root 0x%x exceeds prefetch threshold with %f (%d/%d)\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, prefetched_treelet_root, percentage, treelet_prefetch_priority[prefetched_treelet_root], total_threads);
+          }
+          last_rejected_treelet = NULL;
+          submit_prefetch = true;
+        }
+        else {
+          if (prefetched_treelet_root != nullptr && last_rejected_treelet != prefetched_treelet_root) {
+            TOMMY_DPRINTF("Shader %d: Cycle: %d, Treelet root 0x%x does not exceed prefetch threshold with %f (%d/%d)\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, prefetched_treelet_root, percentage, treelet_prefetch_priority[prefetched_treelet_root], total_threads);
+            last_rejected_treelet = prefetched_treelet_root;
+          }
+          submit_prefetch = false;
+        }
+      }
+      else if (m_config->m_treelet_prefetch_heuristic == 2) { // Prefetch Heuristic 2: Prefetch a portion of the treelet based on the popularity percentage
+        // Find the most popular treelet and calculate how popular it is
+        int max = -1;
+        unsigned total_threads = 0;
+        double percentage = 0.0;
+        for (auto treelet_addr : treelet_prefetch_priority) {
+          if (treelet_addr.second > max) {
+            prefetched_treelet_root = treelet_addr.first;
+            max = treelet_addr.second;
+          }
+          total_threads += treelet_addr.second;
+        }
+
+        percentage = static_cast<double>(treelet_prefetch_priority[prefetched_treelet_root]) / static_cast<double>(total_threads);
+
+        int num_nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[prefetched_treelet_root].size();
+        num_nodes_to_prefetch = static_cast<int>((static_cast<double>(num_nodes_in_treelet) * percentage) + 0.5); // + 0.5 is for rounding
+        if (prefetched_treelet_root != nullptr && last_prefetched_treelet != prefetched_treelet_root) {
+          TOMMY_DPRINTF("Shader %d: Cycle: %d, Treelet root 0x%x popularity is %f, prefetching %d/%d nodes\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, prefetched_treelet_root, percentage, num_nodes_to_prefetch, num_nodes_in_treelet);
+        }
+        submit_prefetch = true;
+      }
+      else if (m_config->m_treelet_prefetch_heuristic == 3) { // Prefetch Heuristic 3: Prefetch the latter half of the tree? Since the first half will be handled by demand loads
+        int max = -1;
+        unsigned total_threads = 0;
+        double percentage = 0.5; // prefetch the latter half
+        for (auto treelet_addr : treelet_prefetch_priority) {
+          if (treelet_addr.second > max) {
+            prefetched_treelet_root = treelet_addr.first;
+            max = treelet_addr.second;
+          }
+          total_threads += treelet_addr.second;
+        }
+        // The main difference is in the next stage where I add prefetches
+        int num_nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[prefetched_treelet_root].size();
+        num_nodes_to_prefetch = static_cast<int>((static_cast<double>(num_nodes_in_treelet) * percentage) + 0.5); // + 0.5 is for rounding
+        submit_prefetch = true;
+      }
+
+      // Push treelet nodes to prefetch queue
+      if (submit_prefetch && prefetched_treelet_root != nullptr) {
+        std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[prefetched_treelet_root];
+        if (last_prefetched_treelet != prefetched_treelet_root) { // make sure we arent prefetching the same treelet over and over
+          
+          int num_prefetch_nodes;
+          if (m_config->m_treelet_prefetch_heuristic == 2 || m_config->m_treelet_prefetch_heuristic == 3) {
+            num_prefetch_nodes = num_nodes_to_prefetch; // prefetch the tree partially
+          }
+          else {
+            num_prefetch_nodes = nodes_in_treelet.size(); // prefetch the whole tree
+          }
+          
+          if (num_prefetch_nodes + prefetch_mem_access_q.size() <= m_config->m_max_prefetch_queue_size) { // make sure the treelet i want to prefetch wont exceed the max prefetch queue size
+            
+            if (m_config->m_flush_prefetch_queue_on_new_treelet) { // flush prefetch queue on when there a new most popular treelet
+              TOMMY_DPRINTF("Shader %d: Clearing prefetch queue due to new treelet\n", m_sid);
+              prefetch_mem_access_q.clear();
+              prefetch_generation_cycles.clear();
+            }
+
+            TOMMY_DPRINTF("Shader %d: Add Prefetching for Treelet root 0x%x\n", m_sid, prefetched_treelet_root);
+            if (m_config->m_treelet_prefetch_heuristic == 3) {
+              for (int j = nodes_in_treelet.size() - num_prefetch_nodes; j < nodes_in_treelet.size(); j++) { // Prefetching from the middle of the treelet
+                TOMMY_DPRINTF("Shader %d: %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+                // Create the memory chunks and push to mem_access_q
+                for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
+                  prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+                  prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
+                  TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+                }
+                TOMMY_DPRINTF("\n");
+              }
+            }
+            else { // Normal prefetching from the beginning of the treelet
+              for (int j = 0; j < num_prefetch_nodes; j++) {
+                TOMMY_DPRINTF("Shader %d: %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+                // Create the memory chunks and push to mem_access_q
+                for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
+                  prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+                  prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
+                  TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+                }
+                TOMMY_DPRINTF("\n");
+              }
+            }
+            
+            TOMMY_DPRINTF("Shader %d: Prefetch queue entries: %d\n", m_sid, prefetch_mem_access_q.size());
+            last_prefetched_treelet = prefetched_treelet_root;
+          }
+        }
+        submit_prefetch = false;
+      }
+    }
+  }
+
+
+  // For Treelet Limit Study
+  // Accumulate enough warps before dispatching memory accesses so we can take advantage of treelets
+  if (m_config->m_treelet_queue) {
+
+    // Queue up new warps
+    if (n_warps < m_config->m_rt_max_warps && cycles_without_dispatching < m_config->m_treelet_queue_wait_cycle && accept_new_warps) {
+      if (n_warps > 0) { // Only start counting if a warp is waiting in the warp buffer
+        cycles_without_dispatching++;
+        total_cycles_without_dispatching++;
+      }
+      
+      // If a new warp comes in
+      if (prev_n_warps != n_warps && n_warps > 0) {
+        WARP_QUEUE_DPRINTF("SM %d Queued up %d warps in RT unit, cycles between warps: %d, total delay: %d, Cycle: %d\n", m_sid, n_warps, cycles_without_dispatching, total_cycles_without_dispatching, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+        cycles_without_dispatching = 0;
+      }
+      prev_n_warps = n_warps;
+
+      return;
+    }
+
+    // Enough warps are queued up or wait cycles exceeds threshold
+    accept_new_warps = false;
+    
+    // Sort accesses in the warps
+    if (!sorted) {
+      cycles_without_dispatching = 0;
+      WARP_QUEUE_DPRINTF("SM %d Sorting RT Accesses across %d warps, Cycle: %d\n", m_sid, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+
+      // Tally up all the different memory accesses from all warps
+      std::map<uint8_t*, int> node_access_counts_per_treelet;
+      for (auto warp_inst : m_current_warps)
+      {
+        for (int i = 0; i < 32; i++)
+        {
+          warp_inst_t::per_thread_info thread_info = warp_inst.second.get_thread_info(i);
+          for (auto mem_access : thread_info.RT_mem_accesses)
+          {
+            // std::cout << mem_access.address << std::endl;
+            uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)mem_access.address);
+            node_access_counts_per_treelet[treelet_root_bin] += 1;
+          }
+        }
+      }
+
+      // Sort each thread's bag of memory accesses
+      if (m_config->m_treelet_sort) {
+        for (auto &warp_inst : m_current_warps)
+        {
+          for (int i = 0; i < 32; i++)
+          {
+            //std::cout << "Sorting SM " << m_sid << " Thd " << i << std::endl;
+            std::deque<RTMemoryTransactionRecord> original_mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+            std::deque<RTMemoryTransactionRecord> sorted_mem_accesses = warp_inst.second.get_thread_info(i).RT_mem_accesses;
+            
+            WARP_QUEUE_DPRINTF("Inst %d thread %d before: ", warp_inst.first, i);
+            for (auto mem : original_mem_accesses) {
+              WARP_QUEUE_DPRINTF("0x%x, ", mem.address);
+            }
+
+            sort_mem_accesses(sorted_mem_accesses, node_access_counts_per_treelet); // TODO: need to consider node_access_counts_per_treelet
+            warp_inst.second.get_thread_info(i).RT_mem_accesses = sorted_mem_accesses; // rewrite later by passing it directly into the function
+
+            WARP_QUEUE_DPRINTF("\nInst %d thread %d  after: ", warp_inst.first, i);
+            for (auto mem : warp_inst.second.get_thread_info(i).RT_mem_accesses) {
+              WARP_QUEUE_DPRINTF("0x%x, ", mem.address);
+            }
+
+            if (original_mem_accesses == warp_inst.second.get_thread_info(i).RT_mem_accesses) {
+              WARP_QUEUE_DPRINTF("same\n");
+            }
+            else {
+              WARP_QUEUE_DPRINTF("different\n");
+            }
+
+            
+          }
+        }
+      }
+
+      sorted = true; // Don't sort anymore until this warp buffer is cleared out
+    }
+
+    // Generate prefetch requests based on each thread's first request in all warps
+    if (m_config->m_treelet_prefetch) {
+      // For each threads's first access, find the most popular treelet
+      std::map<uint8_t*, int> treelet_prefetch_priority;
+      for (auto warp_inst : m_current_warps) {
+        for (int i = 0; i < 32; i++) {
+          if (!warp_inst.second.get_thread_info(i).RT_mem_accesses.empty()) {
+            new_addr_type first_address = warp_inst.second.get_thread_info(i).RT_mem_accesses.front().address;
+            uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)first_address);
+            treelet_prefetch_priority[treelet_root_bin] += 1;
+          }
+        }
+      }
+      int max = -1;
+      uint8_t* treelet_root = nullptr;
+      for (auto treelet_addr : treelet_prefetch_priority) {
+        if (treelet_addr.second > max) {
+          treelet_root = treelet_addr.first;
+          max = treelet_addr.second;
+        }
+      }
+
+      // Push treelet nodes to prefetch queue
+      std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[treelet_root];
+      if (last_prefetched_treelet != treelet_root) { // make sure we arent prefetching the same treelet over and over
+        if (nodes_in_treelet.size() + prefetch_mem_access_q.size() <= m_config->m_max_prefetch_queue_size) { // make sure the treelet i want to prefetch wont exceed the max prefetch queue size
+          TOMMY_DPRINTF("Shader %d: Add Prefetching for Treelet root 0x%x\n", m_sid, treelet_root);
+          for (int j = 0; j < nodes_in_treelet.size(); j++) {
+            TOMMY_DPRINTF("Shader %d: %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+            // Create the memory chunks and push to mem_access_q
+            for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
+              prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+              prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32))));
+              TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+            }
+            TOMMY_DPRINTF("\n");
+          }
+          TOMMY_DPRINTF("Shader %d: Prefetch queue entries: %d\n", m_sid, prefetch_mem_access_q.size());
+          last_prefetched_treelet = treelet_root;
+        }
+      }
+    }
+    
+    // Alternatively, prefetch based on node_access_counts_per_treelet if we have oracle info
+  }
+
+  if (prev_n_warps != n_warps && m_config->m_treelet_queue)
+    WARP_QUEUE_DPRINTF("SM %d Processing %d warps, Cycle: %d\n", m_sid, n_warps, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+  prev_n_warps = n_warps;
+  prev_n_queued_warps = n_queued_warps;
 
   // Choose next warp
   warp_inst_t rt_inst;
@@ -3045,7 +3994,7 @@ void rt_unit::cycle() {
   if (!mem_access_q.empty()) {
     // Check if warp still exists
     if (m_current_warps.find(mem_access_q_warp_uid) == m_current_warps.end()) {
-      printf("Memory chunk original warp not found (w_uid: %d); erasing memory accesses starting with 0x%x.\n", mem_access_q_warp_uid, mem_access_q.front());
+      printf("Memory chunk original warp not found (w_uid: %d); erasing memory accesses starting with 0x%x.\n", mem_access_q_warp_uid, mem_access_q.front().first);
       mem_access_q.clear();
       if (mem_store_q.empty()) {
         schedule_next_warp(rt_inst);
@@ -3076,8 +4025,23 @@ void rt_unit::cycle() {
     (it->second).track_rt_cycles(false);
   }
 
+  // Prioritize prefetches
+  prefetch_access = false;
+  if (m_config->m_treelet_prefetch && !prefetch_mem_access_q.empty() && !m_current_warps.empty() && m_config->prioritize_prefetches) {
+    warp_inst_t dummy_rt_inst = m_current_warps.begin()->second;
+    send_prefetch_request(dummy_rt_inst);
+  }
+
   // Schedule next memory request
-  memory_cycle(rt_inst);
+  if (prefetch_access == false) {
+    memory_cycle(rt_inst);
+  }
+
+  // Schedule a prefetch request if nothing was sent in memory_cycle (Prioritize demand loads)
+  if (m_config->m_treelet_prefetch && prefetch_opportunity && !m_current_warps.empty() && !m_config->prioritize_prefetches) {
+    warp_inst_t dummy_rt_inst = m_current_warps.begin()->second;
+    send_prefetch_request(dummy_rt_inst);
+  }
 
   // Place warp back
   if (!rt_inst.empty()) m_current_warps[rt_inst.get_uid()] = rt_inst;
@@ -3099,6 +4063,8 @@ void rt_unit::cycle() {
         // Track number of warps in RT core
         n_warps--;
         assert(n_warps >= 0 && n_warps <= m_config->m_rt_max_warps);
+        GPGPU_Context()->the_gpgpusim->g_the_gpu->writeback_cycles.push_back(GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+
         
         // Track completed warp uid
         completed_warp_uid = it->first;
@@ -3146,6 +4112,39 @@ void rt_unit::cycle() {
   // Remove complete warp
   if (completed_warp_uid >= 0) {
     m_current_warps.erase(completed_warp_uid);
+
+    if (m_config->m_keep_accepting_warps) {
+      if (m_config->m_treelet_sort) {
+        int result = sorted_warp_insts.erase(completed_warp_uid);
+        assert(result);
+      }
+    }
+  }
+
+  // Current batch of warp insts is completed (pipelined queue)
+  if (m_config->m_pipelined_treelet_queue) {
+    if (m_current_warps.empty() && executing) {
+      WARP_QUEUE_DPRINTF("SM %d finished processing current batch of insts, Cycle %d\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+      sorted = false;
+      executing = false;
+      
+      // Clear out the prefetch_mem_access_q so it doesnt clog up the next batch of warps
+      prefetch_mem_access_q.clear();
+      prefetch_generation_cycles.clear();
+    }
+  }
+
+  // Current batch of warp insts is completed
+  if (m_config->m_treelet_queue) {
+    if (m_current_warps.empty()) {
+      WARP_QUEUE_DPRINTF("SM %d finished processing current batch of insts, Cycle %d\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+      accept_new_warps = true;
+      sorted = false;
+      
+      // Clear out the prefetch_mem_access_q so it doesnt clog up the next batch of warps
+      prefetch_mem_access_q.clear();
+      prefetch_generation_cycles.clear();
+    }
   }
   
   assert(n_warps == m_current_warps.size());
@@ -3169,6 +4168,9 @@ void rt_unit::process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg) {
       if (requester_thread_found == 0) {
         // Might occur in warp coalescing in rare cases when multiple requests were sent, but only 1 was necessary
         RT_DPRINTF("Requester not found for: 0x%x\n", mf->get_addr());
+      }
+      else {
+        printf("Requester found for 0x%x, # threads: %d\n", mf->get_addr(), requester_thread_found);
       }
     } 
     
@@ -3219,8 +4221,79 @@ void rt_unit::process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg) {
 void rt_unit::schedule_next_warp(warp_inst_t &inst) {
   // Return if there are no warps in the RT unit
   if (m_current_warps.empty()) return;
-      
-  // Otherwise, find the first non-stalled warp
+  
+  else if (m_config->m_treelet_scheduler == 1 && m_config->m_treelet_prefetch == 1) // If the warp has a thread whos access falls in the last_prefetched_treelet, then issue it
+  {
+    // Prioritize warps with an access from the most popular treelet. Its saved in rt_unit::last_prefetched_treelet
+    bool found = false;
+    for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+      if (!((it->second).is_stalled())) { 
+        for (int i = 0; i < 32; i++) {
+          if (!it->second.get_thread_info(i).RT_mem_accesses.empty()) {
+            if (VulkanRayTracing::addrToTreeletID((uint8_t*)(it->second.get_thread_info(i).RT_mem_accesses.front().address)) == last_prefetched_treelet) {
+              inst = it->second;
+              found = true;
+              break;
+            }
+          }
+        }
+        if (found) {
+          RT_SCHEDULER_DPRINTF("Shader %d: RT scheduler found warp inst %d that matches the current prefetched treelet, Cycle %d\n", m_sid, inst.get_uid(), GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, inst.get_uid());
+          break;
+        }
+      }
+    }
+    if (!found) { // if not found, then revert to normal scheduling
+      for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+        if (!((it->second).is_stalled())) { 
+          inst = it->second;
+          RT_SCHEDULER_DPRINTF("Shader %d: RT scheduler reverts to normal scheduling since no warp insts matches the current prefetched treelet, Cycle %d\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+          break;
+        }
+      }
+    }
+    if (!inst.empty()) m_current_warps.erase(inst.get_uid());
+  }
+  else if (m_config->m_treelet_scheduler == 2 && m_config->m_treelet_prefetch == 1) // If the warp with the most threads matching with the last_prefetched_treelet and issue it
+  {
+    // Prioritize warps with an access from the most popular treelet. Its saved in rt_unit::last_prefetched_treelet
+    bool found = false;
+    int max_inst_count = 0;
+    warp_inst_t max_inst;
+    for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+      int current_inst_count = 0;
+      if (!((it->second).is_stalled())) { 
+        for (int i = 0; i < 32; i++) {
+          if (!it->second.get_thread_info(i).RT_mem_accesses.empty()) {
+            if (VulkanRayTracing::addrToTreeletID((uint8_t*)(it->second.get_thread_info(i).RT_mem_accesses.front().address)) == last_prefetched_treelet) {
+              current_inst_count++;
+            }
+          }
+        }
+        if (current_inst_count > max_inst_count) {
+          found = true;
+          max_inst = it->second;
+          max_inst_count = current_inst_count;
+        }
+      }
+    }
+    if (found) {
+      inst = max_inst;
+      RT_SCHEDULER_DPRINTF("Shader %d: RT scheduler found warp inst %d that matches the current prefetched treelet with %d threads, Cycle %d\n", m_sid, inst.get_uid(), max_inst_count, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle, inst.get_uid());
+    }
+    else { // if not found, then revert to normal scheduling
+      for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
+        if (!((it->second).is_stalled())) { 
+          inst = it->second;
+          RT_SCHEDULER_DPRINTF("Shader %d: RT scheduler reverts to normal scheduling since no warp insts matches the current prefetched treelet, Cycle %d\n", m_sid, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+          break;
+        }
+      }
+    }
+    if (!inst.empty()) m_current_warps.erase(inst.get_uid());
+  }
+
+  // Otherwise, find the first non-stalled warp (treelet_scheduler 0)
   else {
     for (auto it=m_current_warps.begin(); it!=m_current_warps.end(); ++it) {
       if (!((it->second).is_stalled())) { 
@@ -3236,6 +4309,9 @@ void rt_unit::memory_cycle(warp_inst_t &inst) {
   mem_chunk = false;
   mem_fetch *mf;
   
+  prefetch_access = false;
+  prefetch_opportunity = false;
+
   // If there are still accesses waiting in mem_access_q, send those first
   if (!mem_access_q.empty()) {
     mem_chunk = true;
@@ -3260,14 +4336,22 @@ void rt_unit::memory_cycle(warp_inst_t &inst) {
     if (m_config->m_rt_max_warps > 0 && m_L0_complet->num_mshr_entries() > m_config->m_rt_max_mshr_entries) return;
     
     // Return if there are no active threads
-    if (!inst.active_count()) return;
-    
+    if (!inst.active_count()) {
+      if (!m_current_warps.empty())
+        prefetch_opportunity = true;
+      return;
+    }
+
     // If we make it here, there should be a valid warp to work with
     assert(inst.space.get_type() == global_space);
     
     // If waiting for responses, don't send new requests
-    if (!m_config->m_rt_coherence_engine && inst.is_stalled()) return;
-    
+    if (!m_config->m_rt_coherence_engine && inst.is_stalled()) {
+      if (!m_current_warps.empty())
+        prefetch_opportunity = true;
+      return;
+    }
+
     // If coherence engine is stalled, don't send new request
     // TODO: Fix the thread intersection latencies so this doesn't happen
     if (m_config->m_rt_coherence_engine && !m_ray_coherence_engine->active()) return;
@@ -3276,6 +4360,26 @@ void rt_unit::memory_cycle(warp_inst_t &inst) {
     RT_DPRINTF("Shader %d: Processing next memory access\n", m_sid);
     mf = process_memory_access_queue(inst);
     if (mf) process_cache_access(m_config->m_rt_use_l1d ? (baseline_cache *)L1D : (baseline_cache *)m_L0_complet, inst, mf);
+  }
+}
+
+
+void rt_unit::send_prefetch_request(warp_inst_t &inst) {
+  mem_fetch *mf;
+
+  if (!prefetch_mem_access_q.empty()) {
+    //TOMMY_DPRINTF("Sending prefetch request\n");
+    prefetch_access = true;
+    mf = process_prefetch_queue(inst);
+    if (mf) {
+      process_cache_access(m_config->m_rt_use_l1d ? (baseline_cache *)L1D : (baseline_cache *)m_L0_complet, inst, mf);
+      prefetches_issued++;
+    }
+  }
+  else {
+    prefetch_access = false;
+    if (!m_current_warps.empty())
+      unused_prefetch_opportunity++;
   }
 }
 
@@ -3326,6 +4430,44 @@ mem_access_t rt_unit::create_mem_access(new_addr_type addr) {
 }
 
 
+mem_fetch* rt_unit::process_prefetch_queue(warp_inst_t &inst) {
+  assert(!prefetch_mem_access_q.empty());
+
+  new_addr_type next_addr = prefetch_mem_access_q.front().first;
+  new_addr_type base_addr = prefetch_mem_access_q.front().second;
+  unsigned prefetch_generation_cycle = prefetch_generation_cycles.front().first;
+  //new_addr_type base_addr = mem_access_q_base_addr;
+  prefetch_mem_access_q.pop_front();
+  prefetch_generation_cycles.pop_front();
+
+  // Create the mem_access_t
+  mem_access_t access = create_mem_access(next_addr);
+  access.set_uncoalesced_base_addr(base_addr);
+  TOMMY_DPRINTF("Shader %d: Prefetching mem_access_t created for 0x%x (block address 0x%x, base address 0x%x, Cycle: %d)\n", m_sid, next_addr, access.get_addr(), base_addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+  
+  // Create mf
+  mem_fetch *mf = m_mf_allocator->alloc(
+    inst, access, m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle
+  ); 
+  mf->set_raytrace();
+  mf->set_prefetch();
+  mf->set_prefetch_generation_cycle(prefetch_generation_cycle);
+  mf->set_prefetch_issue_cycle(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
+  //m_stats->gpgpu_n_rt_mem[mem_access_q_type]++;
+
+  // Prefetch Metadata
+  prefetch_block_info prefetch_info;
+  prefetch_info.mf_request_uid = mf->get_request_uid();
+  prefetch_info.m_prefetch_request_addr = next_addr;
+  prefetch_info.m_block_addr = L1D->get_cache_config().mshr_addr(next_addr); // should I use the mshr_addr or the cacheline address? probably mshr_addr since we are working with a sector cache
+  prefetch_info.prefetch_generation_time = prefetch_generation_cycle;
+  prefetch_info.prefetch_issue_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
+  prefetch_request_tracker[prefetch_info.m_block_addr].push_back(prefetch_info);
+
+  return mf;
+}
+
+
 mem_fetch* rt_unit::process_memory_stores() {
   assert(!mem_store_q.empty());
   
@@ -3371,8 +4513,9 @@ mem_fetch* rt_unit::process_memory_stores() {
 mem_fetch* rt_unit::process_memory_chunks(warp_inst_t &inst) {
   assert(!mem_access_q.empty());
 
-  new_addr_type next_addr = mem_access_q.front();
-  new_addr_type base_addr = mem_access_q_base_addr;
+  new_addr_type next_addr = mem_access_q.front().first;
+  new_addr_type base_addr = mem_access_q.front().second;
+  //new_addr_type base_addr = mem_access_q_base_addr;
   mem_access_q.pop_front();
 
   // Create the mem_access_t
@@ -3386,6 +4529,20 @@ mem_fetch* rt_unit::process_memory_chunks(warp_inst_t &inst) {
   ); 
   mf->set_raytrace();
   m_stats->gpgpu_n_rt_mem[mem_access_q_type]++;
+
+  // Remove duplicate entries from prefetch queue
+  if (m_config->m_treelet_prefetch) {
+    for (int idx = 0; idx < prefetch_mem_access_q.size(); idx++) {
+      if (next_addr == prefetch_mem_access_q[idx].first) {
+        assert(prefetch_mem_access_q[idx].first == prefetch_generation_cycles[idx].second);
+        prefetch_mem_access_q.erase(prefetch_mem_access_q.begin() + idx);
+        prefetch_generation_cycles.erase(prefetch_generation_cycles.begin() + idx);
+        TOMMY_DPRINTF("Shader %d: Removing address 0x%x from prefetch queue due to demand load\n", m_sid, next_addr);
+        prefetches_removed_from_queue++;
+      }
+    }
+  }
+
   return mf;
 }
 
@@ -3399,9 +4556,44 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
   else {
     next_access = inst.get_next_rt_mem_transaction();
   }
+
+  // // Tor's suggestion for the map from treelet ID to sequence ID
+  // std::map <new_addr_type, unsigned> &treeletIDToRayIDMap = GPGPU_Context()->the_gpgpusim->g_the_gpu->treeletIDToRayIDMap;
+  // std::map <new_addr_type, std::map <unsigned, unsigned>> &per_treelet_difference_histogram = GPGPU_Context()->the_gpgpusim->g_the_gpu->per_treelet_difference_histogram;
+
+  // new_addr_type next_access_treelet = (new_addr_type)VulkanRayTracing::addrToTreeletID((uint8_t*)next_access.address);
+  // for (unsigned i=0; i<m_config->warp_size; i++) {
+  //   if (!inst.get_RT_mem_accesses(i).empty()) {
+  //     if (inst.get_RT_mem_accesses(i).front().address == next_access.address) {
+  //       assert(inst.get_rt_ray_properties(i).rayid > 0);
+  //       if (treeletIDToRayIDMap.count(next_access_treelet) == 0) { // new treelet, add to map along with ray id
+  //         treeletIDToRayIDMap[next_access_treelet] = inst.get_rt_ray_properties(i).rayid;
+  //       }
+  //       else {
+  //         unsigned difference = inst.get_rt_ray_properties(i).rayid - treeletIDToRayIDMap[next_access_treelet]; // find difference between current ray id and previous ray id and add to histogram
+  //         per_treelet_difference_histogram[next_access_treelet][difference]++;
+  //         treeletIDToRayIDMap[next_access_treelet] = inst.get_rt_ray_properties(i).rayid; // update with new ray id
+  //       }
+  //     }
+  //   }
+  // }
+
   new_addr_type next_addr = next_access.address;
   new_addr_type base_addr = next_access.address;
   
+  // Stats for Treelet limit study
+  // std::map<new_addr_type, unsigned long long> address_cycle_pair;
+  // address_cycle_pair[next_addr] = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
+  // GPGPU_Context()->the_gpgpusim->g_the_gpu->rt_address_cycle_pair.push_back(address_cycle_pair);
+
+  uint8_t* treelet_root = VulkanRayTracing::addrToTreeletID((uint8_t*)next_addr);
+  std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[treelet_root];
+
+  // std::ofstream memoryTransactionsFile;
+  // memoryTransactionsFile.open("addr_issue_cycle.txt", std::ios_base::app);
+  // //memoryTransactionsFile << "address,cycle,,size,warpid" << std::endl;
+  // memoryTransactionsFile << (void *)next_access.address << "," << GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle << "," << next_access.size << "," << inst.get_warp_id() << std::endl;
+
   // Track memory access type stats
   mem_access_q_type = static_cast<int>(next_access.type);
   
@@ -3415,7 +4607,7 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
     
     // Create the memory chunks and push to mem_access_q
     for (unsigned i=1; i<((next_access.size+31)/32); i++) {
-      mem_access_q.push_back((new_addr_type)(next_access.address + (i * 32)));
+      mem_access_q.push_back(std::make_pair((new_addr_type)(next_access.address + (i * 32)), next_access.address));
       RT_DPRINTF("0x%x, ", next_access.address + (i * 32));
     }
     RT_DPRINTF("\n");
@@ -3432,6 +4624,45 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
   ); 
   mf->set_raytrace();
   m_stats->gpgpu_n_rt_mem[mem_access_q_type]++;
+
+  // Remove duplicate entries from prefetch queue
+  if (m_config->m_treelet_prefetch) {
+    for (int idx = 0; idx < prefetch_mem_access_q.size(); idx++) {
+      if (next_addr == prefetch_mem_access_q[idx].first) {
+        assert(prefetch_mem_access_q[idx].first == prefetch_generation_cycles[idx].second);
+        prefetch_mem_access_q.erase(prefetch_mem_access_q.begin() + idx);
+        prefetch_generation_cycles.erase(prefetch_generation_cycles.begin() + idx);
+        TOMMY_DPRINTF("Shader %d: Removing address 0x%x from prefetch queue due to demand load\n", m_sid, next_addr);
+        prefetches_removed_from_queue++;
+      }
+    }
+  }
+
+  // Treelet Prefetching
+  // if (m_config->m_treelet_prefetch && nodes_in_treelet.size() + prefetch_mem_access_q.size() <= 1000) {
+  //   if (last_prefetched_treelet != treelet_root) {
+  //     TOMMY_DPRINTF("Add Prefetching for Treelet root 0x%x\n", treelet_root);
+  //     for (int j = 1; j < nodes_in_treelet.size(); j++) { // nodes_in_treelet[0] is a duplicate
+  //       TOMMY_DPRINTF("Shader %d: Add Treelet prefetch. %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+  //       // Save the base address
+  //       mem_access_q_base_addr = (new_addr_type)nodes_in_treelet[j].addr;
+  //       // Save the warp id
+  //       mem_access_q_warp_uid = inst.get_uid();
+        
+  //       // Create the memory chunks and push to mem_access_q
+  //       for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
+  //         prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
+  //         prefetch_generation_cycles.push_back(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
+  //         TOMMY_DPRINTF("0x%x, ", (new_addr_type)nodes_in_treelet[j].addr + (i * 32));
+  //       }
+  //       TOMMY_DPRINTF("\n");
+  //     }
+  //     last_prefetched_treelet = treelet_root;
+  //   }
+    // else {
+    //   TOMMY_DPRINTF("Shader %d: Same treelet prefetch already requested.\n", m_sid);
+    // }
+  // }
 
   return mf;
 }
@@ -3507,6 +4738,42 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
       events
     );
   }
+
+  // Classify cache requests of trace ray instruction
+  if (!mf->isprefetch() && mf->israytrace()) {
+    if (status == HIT)
+      trace_ray_hits++;
+    else if (status == MISS)
+      trace_ray_misses++;
+    else if (status == HIT_RESERVED)
+      trace_ray_pending_hits++;
+  }
+
+  // Classify the rays to see if theres any clustering
+  if (status != RESERVATION_FAIL) {
+    if (mf->get_uncoalesced_addr() == mf->get_uncoalesced_base_addr() && !mf->is_write()) {
+      std::map<unsigned, std::map<new_addr_type, unsigned>> &ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->ray_node_tracker;
+      unsigned ctaid = m_core->get_cta_id(inst.get_warp_id()); // this "ctaid" is just the order or the cta in the shader, not the actual ctaid
+      unsigned tid = 0;
+      for (unsigned t = 0; t < m_core->get_warp_size(); t++) {
+        if (inst.active(t)) {
+          tid = t;
+          break;
+        }
+      }
+      dim3 ctaid_d3 = m_core->get_thread_info()[(m_core->get_warp_size() + mf->get_inst().warp_id() + tid)]->get_ctaid(); // real ctaid
+      unsigned ctauid = ctaid_d3.x + ctaid_d3.y * 12;
+      ray_node_tracker[ctauid][mf->get_uncoalesced_base_addr()]++;
+      // printf("Shader %d, ctaid: (%d, %d, %d), cta id: %d\n", m_sid, ctaid_d3.x, ctaid_d3.y, ctaid_d3.z, ctauid);
+
+      std::map<new_addr_type, unsigned> &global_ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->global_ray_node_tracker;
+      global_ray_node_tracker[mf->get_uncoalesced_base_addr()]++;
+
+      std::map<new_addr_type, new_addr_type> &treelet_root_and_children = GPGPU_Context()->the_gpgpusim->g_the_gpu->treelet_root_and_children;
+      new_addr_type root_addr = (new_addr_type) VulkanRayTracing::addrToTreeletID((uint8_t*)mf->get_uncoalesced_base_addr());
+      treelet_root_and_children[mf->get_uncoalesced_base_addr()] = root_addr;
+    }
+  }
   
   new_addr_type addr = mf->get_addr();
   new_addr_type base_addr = mf->get_uncoalesced_base_addr();
@@ -3532,8 +4799,35 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
       // Otherwise, the request cannot be handled this cycle
       else {
         RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
+        if (prefetch_access) {
+          prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
+          prefetch_generation_cycles.push_front(std::make_pair(mf->get_prefetch_generation_cycle(), mf->get_uncoalesced_addr()));
+          prefetch_request_tracker[cache->get_cache_config().mshr_addr(mf->get_uncoalesced_addr())].pop_back();
+          prefetches_readded_to_queue++;
+        }
+        else {
+          if (mem_chunk) {
+            mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
+          }
+          else {
+            if (m_config->m_rt_coherence_engine) m_ray_coherence_engine->undo_access(mf->get_uncoalesced_addr());
+            else inst.undo_rt_access(mf->get_uncoalesced_addr());
+          }
+          m_stats->gpgpu_n_rt_mem[mem_access_q_type]--;
+        }
+      }
+    }
+    else {
+      RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
+      if (prefetch_access) {
+        prefetch_mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
+        prefetch_generation_cycles.push_front(std::make_pair(mf->get_prefetch_generation_cycle(), mf->get_uncoalesced_addr()));
+        prefetch_request_tracker[cache->get_cache_config().mshr_addr(mf->get_uncoalesced_addr())].pop_back();
+        prefetches_readded_to_queue++;
+      }
+      else {
         if (mem_chunk) {
-          mem_access_q.push_front(mf->get_uncoalesced_addr());
+          mem_access_q.push_front(std::make_pair(mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr()));
         }
         else {
           if (m_config->m_rt_coherence_engine) m_ray_coherence_engine->undo_access(mf->get_uncoalesced_addr());
@@ -3541,17 +4835,6 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
         }
         m_stats->gpgpu_n_rt_mem[mem_access_q_type]--;
       }
-    }
-    else {
-      RT_DPRINTF("Shader %d: Reservation fail, undoing request for 0x%x (base 0x%x)\n", m_sid, mf->get_uncoalesced_addr(), mf->get_uncoalesced_base_addr());
-      if (mem_chunk) {
-        mem_access_q.push_front(mf->get_uncoalesced_addr());
-      }
-      else {
-        if (m_config->m_rt_coherence_engine) m_ray_coherence_engine->undo_access(mf->get_uncoalesced_addr());
-        else inst.undo_rt_access(mf->get_uncoalesced_addr());
-      }
-      m_stats->gpgpu_n_rt_mem[mem_access_q_type]--;
     }
     delete mf;
   }
@@ -3591,7 +4874,7 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
     if (!mf->is_write()) delete mf;
     
   } else {
-    assert(status == MISS);
+    assert(status == MISS || status == HIT_RESERVED);
   }
 }
 
@@ -3645,7 +4928,7 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      Scoreboard *scoreboard, const shader_core_config *config,
                      const memory_config *mem_config, shader_core_stats *stats,
                      unsigned sid, unsigned tpc)
-    : pipelined_simd_unit(NULL, config, config->smem_latency, core),
+    : pipelined_simd_unit(NULL, config, config->smem_latency, core, 0),
       m_next_wb(config) {
   assert(config->smem_latency > 1);
   init(icnt, mf_allocator, core, operand_collector, scoreboard, config,
@@ -3673,7 +4956,7 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      Scoreboard *scoreboard, const shader_core_config *config,
                      const memory_config *mem_config, shader_core_stats *stats,
                      unsigned sid, unsigned tpc, l1_cache *new_l1d_cache)
-    : pipelined_simd_unit(NULL, config, 3, core),
+    : pipelined_simd_unit(NULL, config, 3, core, 0),
       m_L1D(new_l1d_cache),
       m_next_wb(config) {
   init(icnt, mf_allocator, core, operand_collector, scoreboard, config,
@@ -3880,8 +5163,7 @@ void ldst_unit::cycle() {
   m_stats->l1d_missrate[m_sid] = (float)total_misses / total_access;
 
   writeback();
-  for (int i = 0; i < m_config->reg_file_port_throughput; ++i)
-    m_operand_collector->step();
+
   for (unsigned stage = 0; (stage + 1) < m_pipeline_depth; stage++)
     if (m_pipeline_reg[stage]->empty() && !m_pipeline_reg[stage + 1]->empty())
       move_warp(m_pipeline_reg[stage], m_pipeline_reg[stage + 1]);
@@ -4325,52 +5607,69 @@ void warp_inst_t::print(FILE *fout) const {
   m_config->gpgpu_ctx->func_sim->ptx_print_insn(pc, fout);
   fprintf(fout, "\n");
 }
-void shader_core_ctx::incexecstat(warp_inst_t *&inst) {
-  if (inst->mem_op == TEX) inctex_stat(inst->active_count(), 1);
-
-  // Latency numbers for next operations are used to scale the power values
-  // for special operations, according observations from microbenchmarking
-  // TODO: put these numbers in the xml configuration
-
-  switch (inst->sp_op) {
+void shader_core_ctx::incexecstat(warp_inst_t *&inst)
+{
+    // Latency numbers for next operations are used to scale the power values
+    // for special operations, according observations from microbenchmarking
+    // TODO: put these numbers in the xml configuration
+  if(get_gpu()->get_config().g_power_simulation_enabled){
+    switch(inst->sp_op){
     case INT__OP:
-      incialu_stat(inst->active_count(), 32);
+      incialu_stat(inst->active_count(), scaling_coeffs->int_coeff);
       break;
     case INT_MUL_OP:
-      incimul_stat(inst->active_count(), 7.2);
+      incimul_stat(inst->active_count(), scaling_coeffs->int_mul_coeff);
       break;
     case INT_MUL24_OP:
-      incimul24_stat(inst->active_count(), 4.2);
+      incimul24_stat(inst->active_count(), scaling_coeffs->int_mul24_coeff);
       break;
     case INT_MUL32_OP:
-      incimul32_stat(inst->active_count(), 4);
+      incimul32_stat(inst->active_count(), scaling_coeffs->int_mul32_coeff);
       break;
     case INT_DIV_OP:
-      incidiv_stat(inst->active_count(), 40);
+      incidiv_stat(inst->active_count(), scaling_coeffs->int_div_coeff);
       break;
     case FP__OP:
-      incfpalu_stat(inst->active_count(), 1);
+      incfpalu_stat(inst->active_count(),scaling_coeffs->fp_coeff);
       break;
     case FP_MUL_OP:
-      incfpmul_stat(inst->active_count(), 1.8);
+      incfpmul_stat(inst->active_count(), scaling_coeffs->fp_mul_coeff);
       break;
     case FP_DIV_OP:
-      incfpdiv_stat(inst->active_count(), 48);
+      incfpdiv_stat(inst->active_count(), scaling_coeffs->fp_div_coeff);
+      break;
+    case DP___OP:
+      incdpalu_stat(inst->active_count(), scaling_coeffs->dp_coeff);
+      break;
+    case DP_MUL_OP:
+      incdpmul_stat(inst->active_count(), scaling_coeffs->dp_mul_coeff);
+      break;
+    case DP_DIV_OP:
+      incdpdiv_stat(inst->active_count(), scaling_coeffs->dp_div_coeff);
       break;
     case FP_SQRT_OP:
-      inctrans_stat(inst->active_count(), 25);
+      incsqrt_stat(inst->active_count(), scaling_coeffs->sqrt_coeff);
       break;
     case FP_LG_OP:
-      inctrans_stat(inst->active_count(), 35);
+      inclog_stat(inst->active_count(), scaling_coeffs->log_coeff);
       break;
     case FP_SIN_OP:
-      inctrans_stat(inst->active_count(), 12);
+      incsin_stat(inst->active_count(), scaling_coeffs->sin_coeff);
       break;
     case FP_EXP_OP:
-      inctrans_stat(inst->active_count(), 35);
+      incexp_stat(inst->active_count(), scaling_coeffs->exp_coeff);
+      break;
+    case TENSOR__OP:
+      inctensor_stat(inst->active_count(), scaling_coeffs->tensor_coeff);
+      break;
+    case TEX__OP:
+      inctex_stat(inst->active_count(), scaling_coeffs->tex_coeff);
       break;
     default:
       break;
+    }
+    if(inst->const_cache_operand) //warp has const address space load as one operand
+      inc_const_accesses(1);
   }
 }
 void shader_core_ctx::print_stage(unsigned int stage, FILE *fout) const {
@@ -4727,49 +6026,46 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
   if (adaptive_cache_config && !k.cache_config_set) {
     // For more info about adaptive cache, see
     // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory-7-x
-    unsigned total_shmed = kernel_info->smem * result;
-    assert(total_shmed >= 0 && total_shmed <= gpgpu_shmem_size);
-    // assert(gpgpu_shmem_size == 98304); //Volta has 96 KB shared
-    // assert(m_L1D_config.get_nset() == 4);  //Volta L1 has four sets
-    if (total_shmed < gpgpu_shmem_size) {
-      switch (adaptive_cache_config) {
-        case FIXED:
-          break;
-        case ADAPTIVE_VOLTA: {
-          // For Volta, we assign the remaining shared memory to L1 cache
-          // For more info about adaptive cache, see
-          // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory-7-x
-          // assert(gpgpu_shmem_size == 98304); //Volta has 96 KB shared
+    unsigned total_shmem = kernel_info->smem * result;
+    assert(total_shmem >= 0 && total_shmem <= shmem_opt_list.back());
 
-          // To Do: make it flexible and not tuned to 9KB share memory
-          unsigned max_assoc = m_L1D_config.get_max_assoc();
-          if (total_shmed == 0)
-            m_L1D_config.set_assoc(max_assoc);  // L1 is 128KB and shd=0
-          else if (total_shmed > 0 && total_shmed <= 8192)
-            m_L1D_config.set_assoc(0.9375 *
-                                   max_assoc);  // L1 is 120KB and shd=8KB
-          else if (total_shmed > 8192 && total_shmed <= 16384)
-            m_L1D_config.set_assoc(0.875 *
-                                   max_assoc);  // L1 is 112KB and shd=16KB
-          else if (total_shmed > 16384 && total_shmed <= 32768)
-            m_L1D_config.set_assoc(0.75 * max_assoc);  // L1 is 96KB and
-                                                       // shd=32KB
-          else if (total_shmed > 32768 && total_shmed <= 65536)
-            m_L1D_config.set_assoc(0.5 * max_assoc);  // L1 is 64KB and shd=64KB
-          else if (total_shmed > 65536 && total_shmed <= gpgpu_shmem_size)
-            m_L1D_config.set_assoc(0.25 * max_assoc);  // L1 is 32KB and
-                                                       // shd=96KB
-          else
-            assert(0);
-          break;
-        }
-        default:
-          assert(0);
+    // Unified cache config is in KB. Converting to B
+    unsigned total_unified = m_L1D_config.m_unified_cache_size * 1024;
+
+    bool l1d_configured = false;
+    unsigned max_assoc = m_L1D_config.get_max_assoc();
+
+    for (std::vector<unsigned>::const_iterator it = shmem_opt_list.begin();
+         it < shmem_opt_list.end(); it++) {
+      if (total_shmem <= *it) {
+        float l1_ratio = 1 - ((float)*(it) / total_unified);
+        // make sure the ratio is between 0 and 1
+        assert(0 <= l1_ratio && l1_ratio <= 1);
+        // round to nearest instead of round down
+        m_L1D_config.set_assoc(max_assoc * l1_ratio + 0.5f);
+        l1d_configured = true;
+        break;
       }
-
-      printf("GPGPU-Sim: Reconfigure L1 cache to %uKB\n",
-             m_L1D_config.get_total_size_inKB());
     }
+
+    assert(l1d_configured && "no shared memory option found");
+
+    if (m_L1D_config.is_streaming()) {
+      // for streaming cache, if the whole memory is allocated
+      // to the L1 cache, then make the allocation to be on_MISS
+      // otherwise, make it ON_FILL to eliminate line allocation fails
+      // i.e. MSHR throughput is the same, independent on the L1 cache
+      // size/associativity
+      if (total_shmem == 0) {
+        m_L1D_config.set_allocation_policy(ON_MISS);
+        printf("GPGPU-Sim: Reconfigure L1 allocation to ON_MISS\n");
+      } else {
+        m_L1D_config.set_allocation_policy(ON_FILL);
+        printf("GPGPU-Sim: Reconfigure L1 allocation to ON_FILL\n");
+      }
+    }
+    printf("GPGPU-Sim: Reconfigure L1 cache to %uKB\n",
+           m_L1D_config.get_total_size_inKB());
 
     k.cache_config_set = true;
   }
@@ -5410,15 +6706,26 @@ void opndcoll_rfu_t::init(unsigned num_banks, shader_core_ctx *shader) {
   assert((m_bank_warp_shift == 5) || (m_warp_size != 32));
 
   sub_core_model = shader->get_config()->sub_core_model;
-  m_num_warp_sceds = shader->get_config()->gpgpu_num_sched_per_core;
-  if (sub_core_model)
+  m_num_warp_scheds = shader->get_config()->gpgpu_num_sched_per_core;
+  unsigned reg_id;
+  if (sub_core_model) {
     assert(num_banks % shader->get_config()->gpgpu_num_sched_per_core == 0);
+    assert(m_num_warp_scheds <= m_cu.size() &&
+           m_cu.size() % m_num_warp_scheds == 0);
+  }
   m_num_banks_per_sched =
       num_banks / shader->get_config()->gpgpu_num_sched_per_core;
 
   for (unsigned j = 0; j < m_cu.size(); j++) {
+    if (sub_core_model) {
+      unsigned cusPerSched = m_cu.size() / m_num_warp_scheds;
+      reg_id = j / cusPerSched;
+    }
     m_cu[j]->init(j, num_banks, m_bank_warp_shift, shader->get_config(), this,
-                  sub_core_model, m_num_banks_per_sched);
+                  sub_core_model, reg_id, m_num_banks_per_sched);
+  }
+  for (unsigned j = 0; j < m_dispatch_units.size(); j++) {
+    m_dispatch_units[j].init(sub_core_model,m_num_warp_scheds);
   }
   m_initialized = true;
 }
@@ -5517,7 +6824,22 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
       for (unsigned j = 0; j < inp.m_cu_sets.size(); j++) {
         std::vector<collector_unit_t> &cu_set = m_cus[inp.m_cu_sets[j]];
         bool allocated = false;
-        for (unsigned k = 0; k < cu_set.size(); k++) {
+        unsigned cuLowerBound = 0;
+        unsigned cuUpperBound = cu_set.size();
+        unsigned schd_id;
+        if (sub_core_model) {
+          // Sub core model only allocates on the subset of CUs assigned to the
+          // scheduler that issued
+          unsigned reg_id = (*inp.m_in[i]).get_ready_reg_id();
+          schd_id = (*inp.m_in[i]).get_schd_id(reg_id);
+          assert(cu_set.size() % m_num_warp_scheds == 0 &&
+                 cu_set.size() >= m_num_warp_scheds);
+          unsigned cusPerSched = cu_set.size() / m_num_warp_scheds;
+          cuLowerBound = schd_id * cusPerSched;
+          cuUpperBound = cuLowerBound + cusPerSched;
+          assert(0 <= cuLowerBound && cuUpperBound <= cu_set.size());
+        }
+        for (unsigned k = cuLowerBound; k < cuUpperBound; k++) {
           if (cu_set[k].is_free()) {
             collector_unit_t *cu = &cu_set[k];
             allocated = cu->allocate(inp.m_in[i], inp.m_out[i]);
@@ -5527,8 +6849,9 @@ void opndcoll_rfu_t::allocate_cu(unsigned port_num) {
         }
         if (allocated) break;  // cu has been allocated, no need to search more.
       }
-      break;  // can only service a single input, if it failed it will fail for
-              // others.
+      // break;  // can only service a single input, if it failed it will fail
+      // for
+      // others.
     }
   }
 }
@@ -5575,7 +6898,8 @@ void opndcoll_rfu_t::allocate_reads() {
 }
 
 bool opndcoll_rfu_t::collector_unit_t::ready() const {
-  return (!m_free) && m_not_ready.none() && (*m_output_register).has_free();
+  return (!m_free) && m_not_ready.none() &&
+         (*m_output_register).has_free(m_sub_core_model, m_reg_id);
 }
 
 void opndcoll_rfu_t::collector_unit_t::dump(
@@ -5593,12 +6917,10 @@ void opndcoll_rfu_t::collector_unit_t::dump(
   }
 }
 
-void opndcoll_rfu_t::collector_unit_t::init(unsigned n, unsigned num_banks,
-                                            unsigned log2_warp_size,
-                                            const core_config *config,
-                                            opndcoll_rfu_t *rfu,
-                                            bool sub_core_model,
-                                            unsigned banks_per_sched) {
+void opndcoll_rfu_t::collector_unit_t::init(
+    unsigned n, unsigned num_banks, unsigned log2_warp_size,
+    const core_config *config, opndcoll_rfu_t *rfu, bool sub_core_model,
+    unsigned reg_id, unsigned banks_per_sched) {
   m_rfu = rfu;
   m_cuid = n;
   m_num_banks = num_banks;
@@ -5606,6 +6928,7 @@ void opndcoll_rfu_t::collector_unit_t::init(unsigned n, unsigned num_banks,
   m_warp = new warp_inst_t(config);
   m_bank_warp_shift = log2_warp_size;
   m_sub_core_model = sub_core_model;
+  m_reg_id = reg_id;
   m_num_banks_per_sched = banks_per_sched;
 }
 
@@ -5640,8 +6963,7 @@ bool opndcoll_rfu_t::collector_unit_t::allocate(register_set *pipeline_reg_set,
 
 void opndcoll_rfu_t::collector_unit_t::dispatch() {
   assert(m_not_ready.none());
-  // move_warp(*m_output_register,m_warp);
-  m_output_register->move_in(m_warp);
+  m_output_register->move_in(m_sub_core_model, m_reg_id, m_warp);
   m_free = true;
   m_output_register = NULL;
   for (unsigned i = 0; i < MAX_REG_OPERANDS * 2; i++) m_src_op[i].reset();

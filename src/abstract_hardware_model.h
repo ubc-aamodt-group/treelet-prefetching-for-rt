@@ -1,18 +1,19 @@
-// Copyright (c) 2009-2011, Tor M. Aamodt, Inderpreet Singh,
-// The University of British Columbia
+// Copyright (c) 2009-2021, Tor M. Aamodt, Inderpreet Singh, Vijay Kandiah, Nikos Hardavellas
+// The University of British Columbia, Northwestern University
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are met:
 //
-// Redistributions of source code must retain the above copyright notice, this
-// list of conditions and the following disclaimer.
-// Redistributions in binary form must reproduce the above copyright notice,
-// this list of conditions and the following disclaimer in the documentation
-// and/or other materials provided with the distribution. Neither the name of
-// The University of British Columbia nor the names of its contributors may be
-// used to endorse or promote products derived from this software without
-// specific prior written permission.
+// 1. Redistributions of source code must retain the above copyright notice, this
+//    list of conditions and the following disclaimer;
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+//    this list of conditions and the following disclaimer in the documentation
+//    and/or other materials provided with the distribution;
+// 3. Neither the names of The University of British Columbia, Northwestern 
+//    University nor the names of their contributors may be used to
+//    endorse or promote products derived from this software without specific
+//    prior written permission.
 //
 // THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 // AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
@@ -62,13 +63,37 @@ enum _memory_space_t {
   instruction_space
 };
 
+#ifndef COEFF_STRUCT
+#define COEFF_STRUCT
+
+struct PowerscalingCoefficients{
+    double int_coeff;
+    double int_mul_coeff;
+    double int_mul24_coeff;
+    double int_mul32_coeff;
+    double int_div_coeff;
+    double fp_coeff;
+    double dp_coeff;
+    double fp_mul_coeff;
+    double fp_div_coeff;
+    double dp_mul_coeff;
+    double dp_div_coeff;
+    double sqrt_coeff;
+    double log_coeff;
+    double sin_coeff;
+    double exp_coeff;
+    double tensor_coeff;
+    double tex_coeff;
+};
+#endif
+
 enum FuncCache {
   FuncCachePreferNone = 0,
   FuncCachePreferShared = 1,
   FuncCachePreferL1 = 2
 };
 
-enum AdaptiveCache { FIXED = 0, ADAPTIVE_VOLTA = 1 };
+enum AdaptiveCache { FIXED = 0, ADAPTIVE_CACHE = 1 };
 
 #ifdef __cplusplus
 
@@ -139,8 +164,14 @@ enum special_operations_t {
   FP_SQRT_OP,
   FP_LG_OP,
   FP_SIN_OP,
-  FP_EXP_OP
+  FP_EXP_OP,
+  DP_MUL_OP,
+  DP_DIV_OP,
+  DP___OP,
+  TENSOR__OP,
+  TEX__OP
 };
+
 typedef enum special_operations_t
     special_ops;  // Required to identify for the power model
 enum operation_pipeline_t {
@@ -168,7 +199,7 @@ enum _memory_op_t {
 };
 
 enum class TransactionType {
-    BVH_STRUCTURE,
+    BVH_STRUCTURE = 0,
     BVH_INTERNAL_NODE,
     BVH_INSTANCE_LEAF,
     BVH_PRIMITIVE_LEAF_DESCRIPTOR,
@@ -212,6 +243,30 @@ enum rt_ray_status {
   ray_statuses
 };
 
+
+enum prefetch_request_effectiveness {
+  TOO_LATE = 0,
+  LATE,
+  TIMELY,
+  TOO_EARLY,
+  NEVER_USED,
+  UNCLASSIFIED,
+};
+
+
+enum prefetch_access_status {
+  UNDEFINED = 0,
+  MISS_AND_LOAD_FROM_MEM,
+  MISS_BUT_MSHR_MERGE,
+  HIT_IN_CACHE,
+};
+
+
+enum cache_fill_source {
+  UNDEFINED_SOURCE = 0,
+  DEMAND_LOAD,
+  PREFETCH,
+};
 
 #define RT_WRITE_BACK_SIZE 32
 
@@ -273,11 +328,13 @@ typedef struct MemoryStoreTransactionRecord {
     StoreTransactionType type;
 } MemoryStoreTransactionRecord;
 
+struct RTMemoryTransactionRecord;
+
 struct Ray
 {
 	float4 origin_tmin;
 	float4 dir_tmax;
-
+  unsigned rayid;
 	bool anyhit;
 
   float3 get_origin() const { return {origin_tmin.x, origin_tmin.y, origin_tmin.z}; }
@@ -298,7 +355,7 @@ struct Ray
     return {origin_tmin.x + dir_tmax.x * t, origin_tmin.y + dir_tmax.y * t, origin_tmin.z + dir_tmax.z * t};
   }
 
-  void make_ray(float3 o, float3 d, float t_min, float t_max)
+  void make_ray(float3 o, float3 d, float t_min, float t_max, unsigned ray_id = 0)
   {
     origin_tmin.x = o.x;
     origin_tmin.y = o.y;
@@ -308,6 +365,7 @@ struct Ray
     dir_tmax.y = d.y;
     dir_tmax.z = d.z;
     dir_tmax.w = t_max;
+    rayid = ray_id;
   }
 };
 
@@ -339,6 +397,41 @@ address_type line_size_based_tag_func(new_addr_type address, new_addr_type line_
 #define TXL_DPRINTF(...) \
    if(TEX_CACHE_DEBUG_PRINT) { \
       printf("TXL: "); \
+      printf(__VA_ARGS__); \
+      fflush(stdout); \
+   }
+
+#define TOMMY_DEBUG_PRINT 0
+#define TOMMY_DPRINTF(...) \
+   if(TOMMY_DEBUG_PRINT) { \
+      printf(__VA_ARGS__); \
+      fflush(stdout); \
+   }
+
+#define WARP_QUEUE_DEBUG_PRINT 0
+#define WARP_QUEUE_DPRINTF(...) \
+   if(WARP_QUEUE_DEBUG_PRINT) { \
+      printf(__VA_ARGS__); \
+      fflush(stdout); \
+   }
+
+#define THREAD_SORT_DEBUG_PRINT 0
+#define THREAD_SORT_DPRINTF(...) \
+   if(THREAD_SORT_DEBUG_PRINT) { \
+      printf(__VA_ARGS__); \
+      fflush(stdout); \
+   }
+
+#define RT_SCHEDULER_DEBUG_PRINT 0
+#define RT_SCHEDULER_DPRINTF(...) \
+   if(RT_SCHEDULER_DEBUG_PRINT) { \
+      printf(__VA_ARGS__); \
+      fflush(stdout); \
+   }
+
+#define SECOND_PREFETCH_DEBUG_PRINT 0
+#define SECOND_PREFETCH_DPRINTF(...) \
+   if(SECOND_PREFETCH_DEBUG_PRINT) { \
       printf(__VA_ARGS__); \
       fflush(stdout); \
    }
@@ -549,6 +642,8 @@ class core_config {
   }
   unsigned mem_warp_parts;
   mutable unsigned gpgpu_shmem_size;
+  char *gpgpu_shmem_option;
+  std::vector<unsigned> shmem_opt_list;
   unsigned gpgpu_shmem_sizeDefault;
   unsigned gpgpu_shmem_sizePrefL1;
   unsigned gpgpu_shmem_sizePrefShared;
@@ -773,6 +868,23 @@ class gpgpu_t {
   unsigned max_rec_entries = 0;
   unsigned splits_table_update_active_entry = 0;
   unsigned splits_table_push_back = 0;
+
+  // Tommy's RT Measurements
+  std::vector<unsigned long long> issue_cycles;
+  std::vector<unsigned long long> writeback_cycles;
+
+  std::map<unsigned, std::map<new_addr_type, unsigned>> ray_node_tracker;
+  std::map<new_addr_type, unsigned> global_ray_node_tracker;
+  std::map<new_addr_type, new_addr_type> treelet_root_and_children;
+
+  std::map <new_addr_type, unsigned> treeletIDToRayIDMap;
+  std::map <new_addr_type, std::map <unsigned, unsigned>> per_treelet_difference_histogram;
+
+  unsigned mshr_rt_merges = 0;
+  unsigned mshr_all_merges = 0;
+  std::map<new_addr_type, unsigned> block_addr_merge_tracker;
+
+  std::vector<std::map<new_addr_type, unsigned long long>> rt_address_cycle_pair;
 
   void *gpu_malloc(size_t size);
   void *gpu_mallocarray(size_t count);
@@ -1086,6 +1198,13 @@ class mem_fetch_allocator {
   virtual mem_fetch *alloc(const class warp_inst_t &inst,
                            const mem_access_t &access,
                            unsigned long long cycle) const = 0;
+  virtual mem_fetch *alloc(new_addr_type addr, mem_access_type type,
+                           const active_mask_t &active_mask,
+                           const mem_access_byte_mask_t &byte_mask,
+                           const mem_access_sector_mask_t &sector_mask,
+                           unsigned size, bool wr, unsigned long long cycle,
+                           unsigned wid, unsigned sid, unsigned tpc,
+                           mem_fetch *original_mf) const = 0;
 };
 
 // the maximum number of destination, source, or address uarch operands in a
@@ -1119,6 +1238,7 @@ class inst_t {
     sp_op = OTHER_OP;
     op_pipe = UNKOWN_OP;
     mem_op = NOT_TEX;
+    const_cache_operand = 0;
     num_operands = 0;
     num_regs = 0;
     memset(out, 0, sizeof(unsigned));
@@ -1160,6 +1280,20 @@ class inst_t {
             (memory_op != bru_st_spill_request && 
             memory_op != bru_rt_spill_request));
   }
+
+  bool is_fp() const { return ((sp_op == FP__OP));}    //VIJAY
+  bool is_fpdiv() const { return ((sp_op == FP_DIV_OP));} 
+  bool is_fpmul() const { return ((sp_op == FP_MUL_OP));} 
+  bool is_dp() const { return ((sp_op == DP___OP));}    
+  bool is_dpdiv() const { return ((sp_op == DP_DIV_OP));} 
+  bool is_dpmul() const { return ((sp_op == DP_MUL_OP));}
+  bool is_imul() const { return ((sp_op == INT_MUL_OP));} 
+  bool is_imul24() const { return ((sp_op == INT_MUL24_OP));} 
+  bool is_imul32() const { return ((sp_op == INT_MUL32_OP));} 
+  bool is_idiv() const { return ((sp_op == INT_DIV_OP));}   
+  bool is_sfu() const {return ((sp_op == FP_SQRT_OP) || (sp_op == FP_LG_OP)  || (sp_op == FP_SIN_OP)  || (sp_op == FP_EXP_OP) || (sp_op == TENSOR__OP));}
+  bool is_alu() const {return (sp_op == INT__OP);}
+
   unsigned get_num_operands() const { return num_operands; }
   unsigned get_num_regs() const { return num_regs; }
   void set_num_regs(unsigned num) { num_regs = num; }
@@ -1183,6 +1317,7 @@ class inst_t {
   operation_pipeline op_pipe;  // code (uarch visible) identify the pipeline of
                                // the operation (SP, SFU or MEM)
   mem_operation mem_op;        // code (uarch visible) identify memory type
+  bool const_cache_operand;   // has a load from constant memory as an operand
   _memory_op_t memory_op;      // memory_op used by ptxplus
   unsigned num_operands;
   unsigned num_regs;  // count vector operand as one register operand
@@ -1257,6 +1392,11 @@ typedef struct RTMemoryTransactionRecord {
         mem_chunks.set(i);
       }
       status = RT_MEM_UNMARKED;
+    }
+
+    bool operator==(const RTMemoryTransactionRecord &o) const
+    {
+        return address == o.address && size == o.size && type == o.type;
     }
 } RTMemoryTransactionRecord;
 
@@ -1493,6 +1633,7 @@ class warp_inst_t : public inst_t {
   bool rt_intersection_delay_done();
   bool has_pending_writes() { return !m_pending_writes.empty(); }
   bool rt_mem_accesses_empty(unsigned int tid) { return m_per_scalar_thread[tid].RT_mem_accesses.empty(); };
+  std::deque<RTMemoryTransactionRecord> get_RT_mem_accesses(unsigned int tid) { return m_per_scalar_thread[tid].RT_mem_accesses; }
   bool is_stalled();
   void undo_rt_access(new_addr_type addr);
   void print_rt_accesses();
@@ -1509,7 +1650,7 @@ class warp_inst_t : public inst_t {
   bool process_returned_mem_access(const mem_fetch *mf, unsigned tid);
   bool process_returned_mem_access(bool &mem_record_done, unsigned tid, new_addr_type addr, new_addr_type uncoalesced_base_addr);
   
-  struct per_thread_info get_thread_info(unsigned tid) { return m_per_scalar_thread[tid]; }
+  struct per_thread_info &get_thread_info(unsigned tid) { return m_per_scalar_thread[tid]; }
   void set_thread_info(unsigned tid, struct per_thread_info thread_info) { m_per_scalar_thread[tid] = thread_info; }
   void clear_thread_info(unsigned tid) { m_per_scalar_thread[tid].clear_mem_accesses(); }
   unsigned get_thread_latency(unsigned tid) const { return m_per_scalar_thread[tid].intersection_delay; }
@@ -1977,6 +2118,7 @@ class register_set {
     }
     m_name = name;
   }
+  const char *get_name() { return m_name; }
   bool has_free() {
     for (unsigned i = 0; i < regs.size(); i++) {
       if (regs[i]->empty()) {
@@ -2001,7 +2143,35 @@ class register_set {
     }
     return false;
   }
+  bool has_ready(bool sub_core_model, unsigned reg_id) {
+    if (!sub_core_model) return has_ready();
+    assert(reg_id < regs.size());
+    return (not regs[reg_id]->empty());
+  }
 
+  unsigned get_ready_reg_id() {
+    // for sub core model we need to figure which reg_id has the ready warp
+    // this function should only be called if has_ready() was true
+    assert(has_ready());
+    warp_inst_t **ready;
+    ready = NULL;
+    unsigned reg_id;
+    for (unsigned i = 0; i < regs.size(); i++) {
+      if (not regs[i]->empty()) {
+        if (ready and (*ready)->get_uid() < regs[i]->get_uid()) {
+          // ready is oldest
+        } else {
+          ready = &regs[i];
+          reg_id = i;
+        }
+      }
+    }
+    return reg_id;
+  }
+  unsigned get_schd_id(unsigned reg_id) {
+    assert(not regs[reg_id]->empty());
+    return regs[reg_id]->get_schd_id();
+  }
   void move_in(warp_inst_t *&src) {
     warp_inst_t **free = get_free();
     move_warp(*free, src);
@@ -2009,8 +2179,27 @@ class register_set {
   // void copy_in( warp_inst_t* src ){
   //   src->copy_contents_to(*get_free());
   //}
+  void move_in(bool sub_core_model, unsigned reg_id, warp_inst_t *&src) {
+    warp_inst_t **free;
+    if (!sub_core_model) {
+      free = get_free();
+    } else {
+      assert(reg_id < regs.size());
+      free = get_free(sub_core_model, reg_id);
+    }
+    move_warp(*free, src);
+  }
+
   void move_out_to(warp_inst_t *&dest) {
     warp_inst_t **ready = get_ready();
+    move_warp(dest, *ready);
+  }
+  void move_out_to(bool sub_core_model, unsigned reg_id, warp_inst_t *&dest) {
+    if (!sub_core_model) {
+      return move_out_to(dest);
+    }
+    warp_inst_t **ready = get_ready(sub_core_model, reg_id);
+    assert(ready != NULL);
     move_warp(dest, *ready);
   }
 
@@ -2026,6 +2215,14 @@ class register_set {
         }
       }
     }
+    return ready;
+  }
+  warp_inst_t **get_ready(bool sub_core_model, unsigned reg_id) {
+    if (!sub_core_model) return get_ready();
+    warp_inst_t **ready;
+    ready = NULL;
+    assert(reg_id < regs.size());
+    if (not regs[reg_id]->empty()) ready = &regs[reg_id];
     return ready;
   }
 
