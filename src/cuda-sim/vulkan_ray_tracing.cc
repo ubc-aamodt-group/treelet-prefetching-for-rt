@@ -1387,12 +1387,12 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
     // printf("## calling trceRay function. rayFlags = %d, cullMask = %d, sbtRecordOffset = %d, sbtRecordStride = %d, missIndex = %d, origin = (%f, %f, %f), Tmin = %f, direction = (%f, %f, %f), Tmax = %f, payload = %d\n",
     //         rayFlags, cullMask, sbtRecordOffset, sbtRecordStride, missIndex, origin.x, origin.y, origin.z, Tmin, direction.x, direction.y, direction.z, Tmax, payload);
 
-    if (!use_external_launcher && !dumped) 
-    {
-        dump_AS(VulkanRayTracing::descriptorSet, _topLevelAS);
-        std::cout << "Trace dumped" << std::endl;
-        dumped = true;
-    }
+    // if (!use_external_launcher && !dumped) 
+    // {
+    //     dump_AS(VulkanRayTracing::descriptorSet, _topLevelAS);
+    //     std::cout << "Trace dumped" << std::endl;
+    //     dumped = true;
+    // }
 
     // Convert device address back to host address for func sim. This will break if the device address was modified then passed to traceRay. Should be fixable if I also record the size when I malloc then I can check the bounds of the device address.
     uint8_t* deviceAddress = nullptr;
@@ -2969,7 +2969,7 @@ void VulkanRayTracing::invoke_gpgpusim()
 
 // int CmdTraceRaysKHRID = 0;
 
-const bool writeImageBinary = true;
+const bool writeImageBinary = false;
 
 void VulkanRayTracing::vkCmdTraceRaysKHR(
                       void *raygen_sbt,
@@ -3679,7 +3679,7 @@ void VulkanRayTracing::image_store(struct DESCRIPTOR_STRUCT* desc, uint32_t gl_L
     struct lvp_image *image = (struct lvp_image *)desc->info.image_view.image;
     VkFormat vk_format = image->vk.format;
     assert(image != NULL);
-    VSIM_DPRINTF("gpgpusim: image_store to %s at %p\n", image->vk.base.object_name, image);
+    //VSIM_DPRINTF("gpgpusim: image_store to %s at %p\n", image->vk.base.object_name, image);
 
     Pixel pixel = Pixel(hitValue_X, hitValue_Y, hitValue_Z, hitValue_W);
 
