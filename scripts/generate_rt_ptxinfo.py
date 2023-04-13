@@ -45,6 +45,7 @@ stdout, stderr = proc.communicate()
 unknown_symbols = []
 unknown_op_name = []
 unknown_op_line = []
+argument_mismatch_line = []
 
 lines = str(stderr, 'utf-8').splitlines()
 for l in lines:
@@ -67,6 +68,11 @@ for l in lines:
         idx4 = l.index(";")
         #print(l[idx3+5:idx4])
         unknown_op_line.append(int(l[idx3+5:idx4]))
+    if (l.find("Arguments mismatch for instruction") != -1):
+        idx3 = l.index("line ")
+        idx4 = l.index(";")
+        # print(l[idx3+5:idx4])
+        argument_mismatch_line.append(int(l[idx3+5:idx4]))
 
 unknown_symbols = list(set(unknown_symbols)) # removes duplicates
 
@@ -224,8 +230,8 @@ for l in f.readlines():
                     
                     #print(";")
                     tempoutput.write(";\n")
-
-
+    elif (linenum in argument_mismatch_line):
+        tempoutput.write("// " + l)
 
     else:
         #print(l)

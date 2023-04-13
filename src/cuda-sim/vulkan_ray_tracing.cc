@@ -1304,59 +1304,59 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
 
     buildNodeToRootMap();
 
-    // BVH stats
-    std::map<StackEntry, int> checkdupes;
-    unsigned treesize = 0;
-    for (auto root : treelet_roots) 
-    {
-        //assert(root.first.size != 0);
-        //treesize += root.first.size;
-        //assert(!checkdupes.count(root.first));
-        checkdupes[root.first]++;
+    // // BVH stats
+    // std::map<StackEntry, int> checkdupes;
+    // unsigned treesize = 0;
+    // for (auto root : treelet_roots) 
+    // {
+    //     //assert(root.first.size != 0);
+    //     //treesize += root.first.size;
+    //     //assert(!checkdupes.count(root.first));
+    //     checkdupes[root.first]++;
 
-        for (auto children : root.second) 
-        {
-            //assert(children.size != 0);
-            //treesize += children.size;
-            //assert(!checkdupes.count(children));
-            checkdupes[children]++;
-        }
-    }
-    unsigned dupecount = 0;
-    for (auto node : checkdupes) {
-        treesize += node.first.size;
-        if (node.second > 1) {
-            dupecount++;
-            //printf("addr: %d, top level: %d, leaf node: %d, size: %d, dupe count: %d\n", node.first.addr, node.first.topLevel, node.first.leaf, node.first.size, node.second);
-        }
-    }
-    std::cout << "Duplicate nodes: " << dupecount << std::endl;
-    std::cout << "Verified Total BVH Size: " << treesize << " bytes" << std::endl;
-    std::cout << "Node Count: " << checkdupes.size() << std::endl;
-    std::cout << "Treelet Roots: " << treelet_roots.size() << std::endl;
+    //     for (auto children : root.second) 
+    //     {
+    //         //assert(children.size != 0);
+    //         //treesize += children.size;
+    //         //assert(!checkdupes.count(children));
+    //         checkdupes[children]++;
+    //     }
+    // }
+    // unsigned dupecount = 0;
+    // for (auto node : checkdupes) {
+    //     treesize += node.first.size;
+    //     if (node.second > 1) {
+    //         dupecount++;
+    //         //printf("addr: %d, top level: %d, leaf node: %d, size: %d, dupe count: %d\n", node.first.addr, node.first.topLevel, node.first.leaf, node.first.size, node.second);
+    //     }
+    // }
+    // std::cout << "Duplicate nodes: " << dupecount << std::endl;
+    // std::cout << "Verified Total BVH Size: " << treesize << " bytes" << std::endl;
+    // std::cout << "Node Count: " << checkdupes.size() << std::endl;
+    // std::cout << "Treelet Roots: " << treelet_roots.size() << std::endl;
 
-    unsigned treesize_with_only_treelet_roots = 0;
-    for (auto root : treelet_roots) {
-        treesize_with_only_treelet_roots += root.first.size;
-    }
-    std::cout << "Tree Size With Only Treelet Roots: " << treesize_with_only_treelet_roots << " bytes" << std::endl;
+    // unsigned treesize_with_only_treelet_roots = 0;
+    // for (auto root : treelet_roots) {
+    //     treesize_with_only_treelet_roots += root.first.size;
+    // }
+    // std::cout << "Tree Size With Only Treelet Roots: " << treesize_with_only_treelet_roots << " bytes" << std::endl;
 
-    // Packed size
-    std::map<StackEntry, unsigned> root_node_sizes;
-    for (auto root : treelet_roots) {
-        for (auto children : root.second) {
-            root_node_sizes[root.first] += children.size;
-        }
-    }
-    assert(treelet_roots.size() == root_node_sizes.size());
+    // // Packed size
+    // std::map<StackEntry, unsigned> root_node_sizes;
+    // for (auto root : treelet_roots) {
+    //     for (auto children : root.second) {
+    //         root_node_sizes[root.first] += children.size;
+    //     }
+    // }
+    // assert(treelet_roots.size() == root_node_sizes.size());
 
-    int cachelines = 0;
-    for (auto root : root_node_sizes) {
-        cachelines += (root.second + 128 - 1) / 128;
-    }
-    std::cout << "Cachelines: " << cachelines << std::endl;
-    std::cout << "Packed size: " << cachelines * 128 << "B" << std::endl;
-    std::cout << "Size expansion: " << ((double)(cachelines * 128) - (double)treesize) / (double)treesize * (double)100 << "%" << std::endl;
+    // int cachelines = 0;
+    // for (auto root : root_node_sizes) {
+    //     cachelines += (root.second + 128 - 1) / 128;
+    // }
+    // std::cout << "Cachelines: " << cachelines << std::endl;
+    // std::cout << "Packed size: " << cachelines * 128 << "B" << std::endl;
+    // std::cout << "Size expansion: " << ((double)(cachelines * 128) - (double)treesize) / (double)treesize * (double)100 << "%" << std::endl;
 }
 
 unsigned rayCount = 0;
@@ -1424,11 +1424,11 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
 
 
     // Parent Pointer Pass
-    if (!parentPointerPassDone)
-    {
-        parentPointerPass(_topLevelAS, device_offset);
-        parentPointerPassDone = true;
-    }
+    // if (!parentPointerPassDone)
+    // {
+    //     parentPointerPass(_topLevelAS, device_offset);
+    //     parentPointerPassDone = true;
+    // }
 
     // // Create Treelets Bottom Up
     // if (!treeletsFormed2)
