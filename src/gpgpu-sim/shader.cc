@@ -3293,12 +3293,29 @@ void rt_unit::cycle() {
       // Every returned mf is a fetched cacheline
       m_stats->rt_total_cacheline_fetched[m_sid]++;
       cacheline_count++;
+
+      if (!mf->isprefetch() && !mf->is_write()) {
+        unsigned mf_lat = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle - mf->get_timestamp();
+        total_demand_load_mf_lat += mf_lat;
+        total_demand_load_mfs++;
+      }
                             
       // Update cache
       if (!m_config->bypassL0Complet) {
         if (m_config->m_rt_use_l1d) {
           L1D->fill( mf, m_core->get_gpu()->gpu_sim_cycle +
                           m_core->get_gpu()->gpu_tot_sim_cycle);
+
+          // Update Treelet Metatdata
+          if (m_config->wait_for_metadata_load) {
+            // If prefetch addr falls in metadata addrs then go ahead and send it
+            bool is_treelet_metadata = mf->get_uncoalesced_base_addr() >= (new_addr_type)VulkanRayTracing::treelet_metadata && 
+                                        mf->get_uncoalesced_base_addr() <= ((new_addr_type)VulkanRayTracing::treelet_metadata + VulkanRayTracing::treelet_roots_addr_only.size() * VulkanRayTracing::per_treelet_metadata_size);
+            if (is_treelet_metadata) {
+              printf("metadata returned for addr 0x%x\n", mf->get_uncoalesced_base_addr());
+              most_recently_loaded_metadata_addr = mf->get_uncoalesced_base_addr();
+            }
+          }
 
           // Prefetch fill time
           if (mf->isprefetch()) {
@@ -3531,6 +3548,19 @@ void rt_unit::cycle() {
             if (m_config->m_treelet_prefetch_heuristic == 3) {
               for (int j = nodes_in_treelet.size() - num_prefetch_nodes; j < nodes_in_treelet.size(); j++) { // Prefetching from the middle of the treelet
                 TOMMY_DPRINTF("Shader %d: %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
+                
+                // Load treelet metadata first so the prefetcher knows what nodes to prefetch
+                if (m_config->load_treelet_metadata) {
+                  new_addr_type metadata_offset = (new_addr_type)(VulkanRayTracing::treelet_addr_to_metadata_idx[nodes_in_treelet[j].addr] * VulkanRayTracing::per_treelet_metadata_size);
+                  new_addr_type metadata_addr = (new_addr_type)(VulkanRayTracing::treelet_metadata) + metadata_offset;
+                  // printf("treelet: 0x%x, id: %d, metadata: 0x%x, offset: 0x%x\n", nodes_in_treelet[j].addr, VulkanRayTracing::treelet_addr_to_metadata_idx[nodes_in_treelet[j].addr], metadata_addr, metadata_offset);
+                  prefetch_metadata_added++;
+                  for (unsigned i=0; i<(VulkanRayTracing::per_treelet_metadata_size/32); i++) {
+                    prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)(metadata_addr + i * 32), metadata_addr));
+                    prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)(metadata_addr + i * 32)));
+                  }
+                }
+                
                 // Create the memory chunks and push to mem_access_q
                 for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
                   prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)((new_addr_type)nodes_in_treelet[j].addr + (i * 32)), (new_addr_type)nodes_in_treelet[j].addr));
@@ -3543,6 +3573,18 @@ void rt_unit::cycle() {
             }
             else { // Normal prefetching from the beginning of the treelet
               for (int j = 0; j < num_prefetch_nodes; j++) {
+                // Load treelet metadata first so the prefetcher knows what nodes to prefetch
+                if (m_config->load_treelet_metadata) {
+                  new_addr_type metadata_offset = (new_addr_type)(VulkanRayTracing::treelet_addr_to_metadata_idx[nodes_in_treelet[j].addr] * VulkanRayTracing::per_treelet_metadata_size);
+                  new_addr_type metadata_addr = (new_addr_type)(VulkanRayTracing::treelet_metadata) + metadata_offset;
+                  // printf("treelet: 0x%x, id: %d, metadata: 0x%x, offset: 0x%x\n", nodes_in_treelet[j].addr, VulkanRayTracing::treelet_addr_to_metadata_idx[nodes_in_treelet[j].addr], metadata_addr, metadata_offset);
+                  prefetch_metadata_added++;
+                  for (unsigned i=0; i<(VulkanRayTracing::per_treelet_metadata_size/32); i++) {
+                    prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)(metadata_addr + i * 32), metadata_addr));
+                    prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)(metadata_addr + i * 32)));
+                  }
+                }
+                
                 TOMMY_DPRINTF("Shader %d: %dB request at 0x%x added chunks at cycle %d ", m_sid, nodes_in_treelet[j].size, (new_addr_type)nodes_in_treelet[j].addr, GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle);
                 // Create the memory chunks and push to mem_access_q
                 for (unsigned i=0; i<((nodes_in_treelet[j].size+31)/32); i++) {
@@ -4043,6 +4085,12 @@ void rt_unit::cycle() {
     send_prefetch_request(dummy_rt_inst);
   }
 
+  // Lee MICRO 2010 Prefetcher
+  if (m_config->m_lee_micro_prefetcher && prefetch_opportunity && !m_current_warps.empty() && !m_config->prioritize_prefetches) {
+    warp_inst_t dummy_rt_inst = m_current_warps.begin()->second;
+    send_prefetch_request(dummy_rt_inst);
+  }
+
   // Place warp back
   if (!rt_inst.empty()) m_current_warps[rt_inst.get_uid()] = rt_inst;
   
@@ -4368,13 +4416,45 @@ void rt_unit::send_prefetch_request(warp_inst_t &inst) {
   mem_fetch *mf;
 
   if (!prefetch_mem_access_q.empty()) {
-    //TOMMY_DPRINTF("Sending prefetch request\n");
-    prefetch_access = true;
-    mf = process_prefetch_queue(inst);
-    if (mf) {
-      process_cache_access(m_config->m_rt_use_l1d ? (baseline_cache *)L1D : (baseline_cache *)m_L0_complet, inst, mf);
-      prefetches_issued++;
+    if (m_config->wait_for_metadata_load) {
+      // If prefetch addr falls in metadata addrs then go ahead and send it
+      bool is_treelet_metadata = prefetch_mem_access_q.front().second >= (new_addr_type)VulkanRayTracing::treelet_metadata && 
+                                 prefetch_mem_access_q.front().second <= ((new_addr_type)VulkanRayTracing::treelet_metadata + VulkanRayTracing::treelet_roots_addr_only.size() * VulkanRayTracing::per_treelet_metadata_size);
+      if (is_treelet_metadata) {
+        //TOMMY_DPRINTF("Sending prefetch request\n");
+        prefetch_access = true;
+        mf = process_prefetch_queue(inst);
+        if (mf) {
+          process_cache_access(m_config->m_rt_use_l1d ? (baseline_cache *)L1D : (baseline_cache *)m_L0_complet, inst, mf);
+          prefetches_issued++;
+        }
+      }
+      else { // Regular Prefetch Request
+        // If prefetch addr is not metadata, check to see if metadata is loaded
+        uint8_t* current_treelet = VulkanRayTracing::addrToTreeletID((uint8_t*)prefetch_mem_access_q.front().second);
+        new_addr_type metadata_offset = (new_addr_type)(VulkanRayTracing::treelet_addr_to_metadata_idx[current_treelet] * VulkanRayTracing::per_treelet_metadata_size);
+        new_addr_type metadata_addr = (new_addr_type)(VulkanRayTracing::treelet_metadata) + metadata_offset;
+        if (most_recently_loaded_metadata_addr == metadata_addr) {
+          //TOMMY_DPRINTF("Sending prefetch request\n");
+          prefetch_access = true;
+          mf = process_prefetch_queue(inst);
+          if (mf) {
+            process_cache_access(m_config->m_rt_use_l1d ? (baseline_cache *)L1D : (baseline_cache *)m_L0_complet, inst, mf);
+            prefetches_issued++;
+          }
+        }
+      }
     }
+    else {
+      //TOMMY_DPRINTF("Sending prefetch request\n");
+      prefetch_access = true;
+      mf = process_prefetch_queue(inst);
+      if (mf) {
+        process_cache_access(m_config->m_rt_use_l1d ? (baseline_cache *)L1D : (baseline_cache *)m_L0_complet, inst, mf);
+        prefetches_issued++;
+      }
+    }
+    
   }
   else {
     prefetch_access = false;
@@ -4543,6 +4623,19 @@ mem_fetch* rt_unit::process_memory_chunks(warp_inst_t &inst) {
     }
   }
 
+  // Remove duplicate entries from prefetch queue (Lee MICRO 2010)
+  if (m_config->m_lee_micro_prefetcher) {
+    for (int idx = 0; idx < prefetch_mem_access_q.size(); idx++) {
+      if (next_addr == prefetch_mem_access_q[idx].first) {
+        assert(prefetch_mem_access_q[idx].first == prefetch_generation_cycles[idx].second);
+        prefetch_mem_access_q.erase(prefetch_mem_access_q.begin() + idx);
+        prefetch_generation_cycles.erase(prefetch_generation_cycles.begin() + idx);
+        TOMMY_DPRINTF("Shader %d: Removing address 0x%x from prefetch queue due to demand load\n", m_sid, next_addr);
+        prefetches_removed_from_queue++;
+      }
+    }
+  }
+
   return mf;
 }
 
@@ -4586,8 +4679,8 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
   // address_cycle_pair[next_addr] = GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle;
   // GPGPU_Context()->the_gpgpusim->g_the_gpu->rt_address_cycle_pair.push_back(address_cycle_pair);
 
-  uint8_t* treelet_root = VulkanRayTracing::addrToTreeletID((uint8_t*)next_addr);
-  std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[treelet_root];
+  // uint8_t* treelet_root = VulkanRayTracing::addrToTreeletID((uint8_t*)next_addr);
+  // std::vector<StackEntry> nodes_in_treelet = VulkanRayTracing::treelet_roots_addr_only[treelet_root];
 
   // std::ofstream memoryTransactionsFile;
   // memoryTransactionsFile.open("addr_issue_cycle.txt", std::ios_base::app);
@@ -4634,6 +4727,58 @@ mem_fetch* rt_unit::process_memory_access_queue(warp_inst_t &inst) {
         prefetch_generation_cycles.erase(prefetch_generation_cycles.begin() + idx);
         TOMMY_DPRINTF("Shader %d: Removing address 0x%x from prefetch queue due to demand load\n", m_sid, next_addr);
         prefetches_removed_from_queue++;
+      }
+    }
+  }
+
+  // Remove duplicate entries from prefetch queue
+  if (m_config->m_lee_micro_prefetcher) {
+    for (int idx = 0; idx < prefetch_mem_access_q.size(); idx++) {
+      if (next_addr == prefetch_mem_access_q[idx].first) {
+        assert(prefetch_mem_access_q[idx].first == prefetch_generation_cycles[idx].second);
+        prefetch_mem_access_q.erase(prefetch_mem_access_q.begin() + idx);
+        prefetch_generation_cycles.erase(prefetch_generation_cycles.begin() + idx);
+        TOMMY_DPRINTF("Shader %d: Removing address 0x%x from prefetch queue due to demand load\n", m_sid, next_addr);
+        prefetches_removed_from_queue++;
+      }
+    }
+  }
+
+
+  // Lee MICRO 2010 Prefetcher
+  if (m_config->m_lee_micro_prefetcher) {
+    // Train
+    // PWS table 
+    if (pws_table.count(inst.get_warp_id()) == 0) { // If a warp has no accesses previously
+      pws_last_accessed_addr[inst.get_warp_id()] = next_addr;
+    }
+    else {
+      if (pws_table[inst.get_warp_id()].size() <= 32) {
+        int stride = next_addr - pws_last_accessed_addr[inst.get_warp_id()];
+        pws_table[inst.get_warp_id()][stride]++;
+      }
+    }
+
+    // Find largest stride for this warp
+    int largest_stride = 0;
+    int largest_stride_count = 0;
+    for (auto warp_stride_table : pws_table[inst.get_warp_id()]) {
+      if (warp_stride_table.second > largest_stride_count) {
+        largest_stride = warp_stride_table.first;
+        largest_stride_count = warp_stride_table.second;
+      }
+    }
+
+    // Generate Prefetch
+    new_addr_type prefetch_addr = next_addr + largest_stride;
+
+    // Add to Prefetch Queue
+    if (m_config->m_max_prefetch_queue_size <= prefetch_mem_access_q.size()) {
+      for (unsigned i=0; i<2; i++) {
+        prefetch_mem_access_q.push_back(std::make_pair((new_addr_type)(prefetch_addr + i * 32), (new_addr_type)prefetch_addr));
+        prefetch_generation_cycles.push_back(std::make_pair(m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle, (new_addr_type)(prefetch_addr + i * 32)));
+        TOMMY_DPRINTF("0x%x, ", (new_addr_type)prefetch_addr + i * 32);
+        prefetches_added_to_queue++;
       }
     }
   }
@@ -4692,6 +4837,12 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
     m_stats->rt_total_cacheline_fetched[m_sid]++;
     cacheline_count++;
 
+    if (!mf->isprefetch() && !mf->is_write()) {
+      unsigned mf_lat = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle - mf->get_timestamp();
+      total_demand_load_mf_lat += mf_lat;
+      total_demand_load_mfs++;
+    }
+
     // Handle write ACKs
     if (mf->get_is_write()) {
       m_stats->rt_writes++;
@@ -4739,6 +4890,20 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
     );
   }
 
+
+  // Treelet Metadata
+  if (m_config->wait_for_metadata_load) {
+    if (status == HIT) {
+      // If prefetch addr falls in metadata addrs then go ahead and send it
+      bool is_treelet_metadata = mf->get_uncoalesced_base_addr() >= (new_addr_type)VulkanRayTracing::treelet_metadata && 
+                                  mf->get_uncoalesced_base_addr() <= ((new_addr_type)VulkanRayTracing::treelet_metadata + VulkanRayTracing::treelet_roots_addr_only.size() * VulkanRayTracing::per_treelet_metadata_size);
+      if (is_treelet_metadata) {
+        most_recently_loaded_metadata_addr = mf->get_uncoalesced_base_addr();
+        printf("metadata hit for addr 0x%x\n", mf->get_uncoalesced_base_addr());
+      }
+    }
+  }
+
   // Classify cache requests of trace ray instruction
   if (!mf->isprefetch() && mf->israytrace()) {
     if (status == HIT)
@@ -4750,30 +4915,30 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
   }
 
   // Classify the rays to see if theres any clustering
-  if (status != RESERVATION_FAIL) {
-    if (mf->get_uncoalesced_addr() == mf->get_uncoalesced_base_addr() && !mf->is_write()) {
-      std::map<unsigned, std::map<new_addr_type, unsigned>> &ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->ray_node_tracker;
-      unsigned ctaid = m_core->get_cta_id(inst.get_warp_id()); // this "ctaid" is just the order or the cta in the shader, not the actual ctaid
-      unsigned tid = 0;
-      for (unsigned t = 0; t < m_core->get_warp_size(); t++) {
-        if (inst.active(t)) {
-          tid = t;
-          break;
-        }
-      }
-      dim3 ctaid_d3 = m_core->get_thread_info()[(m_core->get_warp_size() + mf->get_inst().warp_id() + tid)]->get_ctaid(); // real ctaid
-      unsigned ctauid = ctaid_d3.x + ctaid_d3.y * 12;
-      ray_node_tracker[ctauid][mf->get_uncoalesced_base_addr()]++;
-      // printf("Shader %d, ctaid: (%d, %d, %d), cta id: %d\n", m_sid, ctaid_d3.x, ctaid_d3.y, ctaid_d3.z, ctauid);
+  // if (status != RESERVATION_FAIL) {
+  //   if (mf->get_uncoalesced_addr() == mf->get_uncoalesced_base_addr() && !mf->is_write()) {
+  //     std::map<unsigned, std::map<new_addr_type, unsigned>> &ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->ray_node_tracker;
+  //     unsigned ctaid = m_core->get_cta_id(inst.get_warp_id()); // this "ctaid" is just the order or the cta in the shader, not the actual ctaid
+  //     unsigned tid = 0;
+  //     for (unsigned t = 0; t < m_core->get_warp_size(); t++) {
+  //       if (inst.active(t)) {
+  //         tid = t;
+  //         break;
+  //       }
+  //     }
+  //     dim3 ctaid_d3 = m_core->get_thread_info()[(m_core->get_warp_size() + mf->get_inst().warp_id() + tid)]->get_ctaid(); // real ctaid
+  //     unsigned ctauid = ctaid_d3.x + ctaid_d3.y * 12;
+  //     ray_node_tracker[ctauid][mf->get_uncoalesced_base_addr()]++;
+  //     // printf("Shader %d, ctaid: (%d, %d, %d), cta id: %d\n", m_sid, ctaid_d3.x, ctaid_d3.y, ctaid_d3.z, ctauid);
 
-      std::map<new_addr_type, unsigned> &global_ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->global_ray_node_tracker;
-      global_ray_node_tracker[mf->get_uncoalesced_base_addr()]++;
+  //     std::map<new_addr_type, unsigned> &global_ray_node_tracker = GPGPU_Context()->the_gpgpusim->g_the_gpu->global_ray_node_tracker;
+  //     global_ray_node_tracker[mf->get_uncoalesced_base_addr()]++;
 
-      std::map<new_addr_type, new_addr_type> &treelet_root_and_children = GPGPU_Context()->the_gpgpusim->g_the_gpu->treelet_root_and_children;
-      new_addr_type root_addr = (new_addr_type) VulkanRayTracing::addrToTreeletID((uint8_t*)mf->get_uncoalesced_base_addr());
-      treelet_root_and_children[mf->get_uncoalesced_base_addr()] = root_addr;
-    }
-  }
+  //     std::map<new_addr_type, new_addr_type> &treelet_root_and_children = GPGPU_Context()->the_gpgpusim->g_the_gpu->treelet_root_and_children;
+  //     new_addr_type root_addr = (new_addr_type) VulkanRayTracing::addrToTreeletID((uint8_t*)mf->get_uncoalesced_base_addr());
+  //     treelet_root_and_children[mf->get_uncoalesced_base_addr()] = root_addr;
+  //   }
+  // }
   
   new_addr_type addr = mf->get_addr();
   new_addr_type base_addr = mf->get_uncoalesced_base_addr();
@@ -4845,6 +5010,12 @@ void rt_unit::process_cache_access(baseline_cache *cache, warp_inst_t &inst, mem
     // Every cache hit is a returned cacheline
     m_stats->rt_total_cacheline_fetched[m_sid]++;
     cacheline_count++;
+
+    if (!mf->isprefetch() && !mf->is_write()) {
+      unsigned mf_lat = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle - mf->get_timestamp();
+      total_demand_load_mf_lat += mf_lat;
+      total_demand_load_mfs++;
+    }
 
     if (m_config->m_rt_coherence_engine) {
       std::map<unsigned, warp_inst_t *> m_warp_pointers;

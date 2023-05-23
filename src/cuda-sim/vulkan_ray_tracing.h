@@ -303,6 +303,11 @@ public:
     static std::map<uint8_t*, StackEntry> parent_map_device_offset; // map <node device address, it's parent's device address + info>
     static std::map<uint8_t*, StackEntry> node_info_device_offset; // map <node device address, it's info>
     static std::deque<std::pair<StackEntry, int>> reverse_stack; // BVH nodes in reverse order for bottom up treelet formation
+    static void* treelet_metadata;
+    static std::map<uint8_t*, unsigned> treelet_addr_to_metadata_idx; // labels each treelet so it can find the corresponding treelet metadata in the malloc'd memory
+    static unsigned per_treelet_metadata_size;
+    static uint8_t* treelet_layout_bvh; // address where I will malloc the packed bvh
+    static std::map<uint8_t*, uint8_t*> original_bvh_to_treelet_bvh_mapping; // stores the address mappings of the addresses of the original BVH to a treelet layout BVH
 
     static unsigned accessedDataSize;
 
@@ -416,6 +421,7 @@ public:
     static void parentPointerPass(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset);
     static void createTreelets(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet);
     static void createTreeletsBottomUp(VkAccelerationStructureKHR _topLevelAS, int64_t device_offset, int maxBytesPerTreelet);
+    static void remapBVHToTreeletLayout();
     static float calculateSAH(float3 lo, float3 hi);
     static bool isTreeletRoot(StackEntry node);
     static bool isTreeletRoot(uint8_t* addr);
@@ -425,6 +431,7 @@ public:
     static void buildNodeToRootMap();
     static void findOffsetBounds(int64_t &max_backwards, int64_t &min_backwards, int64_t &min_forwards, int64_t &max_forwards, VkAccelerationStructureKHR _topLevelAS);
     static void* gpgpusim_alloc(uint32_t size);
+    static void* gpgpusim_malloc(uint32_t size);
 };
 
 #endif /* VULKAN_RAY_TRACING_H */

@@ -438,6 +438,30 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-treelet_scheduler", OPT_UINT32, &m_treelet_scheduler,
       "overrides the default rt unit scheduler with a treelet scheduler",
       "0");
+  option_parser_register(
+      opp, "-m_lee_micro_prefetcher", OPT_BOOL, &m_lee_micro_prefetcher,
+      "micro2010 lee prefetcher impl",
+      "0");
+  option_parser_register(
+      opp, "-load_treelet_metadata", OPT_BOOL, &load_treelet_metadata,
+      "load_treelet_metadata",
+      "0");
+  option_parser_register(
+      opp, "-wait_for_metadata_load", OPT_BOOL, &wait_for_metadata_load,
+      "strictly wait_for_metadata_load",
+      "0");
+  option_parser_register(
+      opp, "-early_metadata_load", OPT_BOOL, &early_metadata_load,
+      "fetch metadata earlier",
+      "0");
+  option_parser_register(
+      opp, "-remap_to_treelet_layout", OPT_BOOL, &remap_to_treelet_layout,
+      "remap_to_treelet_layout. make sure to turn all metadata options off",
+      "0");
+  option_parser_register(
+      opp, "-treelet_remap_stride", OPT_UINT32, &treelet_remap_stride,
+      "separates the treelet nodes by a stride to for load balancing according to the DRAM partition stride",
+      "0");
   option_parser_register(opp, "-gpgpu_cache:il1", OPT_CSTR,
                          &m_L1I_config.m_config_string,
                          "shader L1 instruction cache config "
@@ -1834,6 +1858,31 @@ void gpgpu_sim::gpu_print_stat() {
     total_prefetches_readded += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_prefetches_readded_to_queue();
   }
   fprintf(statfout, "%d\n", total_prefetches_readded);
+
+  fprintf(statfout, "\n");
+
+  fprintf(statfout, "total_demand_load_mf_lat: [Clusters 0, ..., N, Total Sum]\n");
+  unsigned total_demand_load_mf_lat = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_demand_load_mf_lat());
+    total_demand_load_mf_lat += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_demand_load_mf_lat();
+  }
+  fprintf(statfout, "%d\n", total_demand_load_mf_lat);
+
+  fprintf(statfout, "\n");
+
+  fprintf(statfout, "total_demand_load_mfs: [Clusters 0, ..., N, Total Sum]\n");
+  unsigned total_demand_load_mfs = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_demand_load_mfs());
+    total_demand_load_mfs += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_demand_load_mfs();
+  }
+  fprintf(statfout, "%d\n", total_demand_load_mfs);
+
+  fprintf(statfout, "\n");
+
+  double avg_rt_demand_load_mf_lat = double((double)total_demand_load_mf_lat / (double)total_demand_load_mfs);
+  fprintf(statfout, "avg_rt_demand_load_mf_lat=%f\n", avg_rt_demand_load_mf_lat);
 
   fprintf(statfout, "\n");
 

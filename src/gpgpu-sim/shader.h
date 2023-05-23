@@ -1418,6 +1418,9 @@ class rt_unit : public pipelined_simd_unit {
         unsigned get_prefetches_added_to_queue() { return prefetches_added_to_queue; }
         unsigned get_prefetches_removed_from_queue() { return prefetches_removed_from_queue; }
         unsigned get_prefetches_readded_to_queue() { return prefetches_readded_to_queue; }
+        unsigned get_total_demand_load_mf_lat() { return total_demand_load_mf_lat; }
+        unsigned get_total_demand_load_mfs() { return total_demand_load_mfs; }
+        unsigned get_prefetch_metadata_added() { return prefetch_metadata_added; }
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -1514,6 +1517,18 @@ class rt_unit : public pipelined_simd_unit {
       unsigned prefetches_added_to_queue = 0;
       unsigned prefetches_removed_from_queue = 0;
       unsigned prefetches_readded_to_queue = 0;
+      unsigned prefetch_metadata_added = 0;
+
+      unsigned total_demand_load_mf_lat = 0;
+      unsigned total_demand_load_mfs = 0;
+
+      new_addr_type most_recently_loaded_metadata_addr = NULL;
+
+      // Lee MICRO 2010 implementation
+      std::map<unsigned, std::map<int, unsigned>> pws_table; // {warp id, {stride, count}}}
+      std::map<unsigned, new_addr_type> pws_last_accessed_addr; // {warp id, last_accessed_addr}
+      std::map<new_addr_type, int> gs_table; // {load addr, stride}
+      std::map<unsigned, std::map<new_addr_type, std::map<int, unsigned>>> ip_table; // {warp id, {load addr, {stride, count}}}
 };
 
 class ldst_unit : public pipelined_simd_unit {
@@ -1967,6 +1982,12 @@ class shader_core_config : public core_config {
   unsigned m_max_prefetch_queue_size;
   bool m_treelet_sort;
   unsigned m_sort_method;
+  bool m_lee_micro_prefetcher;
+  bool load_treelet_metadata;
+  bool wait_for_metadata_load;
+  bool early_metadata_load;
+  bool remap_to_treelet_layout;
+  unsigned treelet_remap_stride;
 };
 
 struct shader_core_stats_pod {
