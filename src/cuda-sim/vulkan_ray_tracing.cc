@@ -2288,6 +2288,7 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
         device_offset = (uint64_t)deviceAddress - (uint64_t)_topLevelAS;
     }
 
+    bool remap_to_treelet_layout = GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[0]->get_m_core()[0]->get_config()->remap_to_treelet_layout;
 
     // Form Treelets
     if (!treeletsFormed)
@@ -2365,7 +2366,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     //uint8_t* topLevelASAddr = get_anv_accel_address((VkAccelerationStructureKHR)_topLevelAS);
     GEN_RT_BVH topBVH; //TODO: test hit with world before traversal
     GEN_RT_BVH_unpack(&topBVH, (uint8_t*)_topLevelAS);
-    transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)_topLevelAS + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+    if (remap_to_treelet_layout) {
+        transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)_topLevelAS + device_offset)], GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+    } else {
+        transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)_topLevelAS + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+    }
     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
     
     uint8_t* topRootAddr = (uint8_t*)_topLevelAS + topBVH.RootNodeOffset;
@@ -2423,7 +2428,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             next_node_addr = NULL;
             struct GEN_RT_BVH_INTERNAL_NODE node;
             GEN_RT_BVH_INTERNAL_NODE_unpack(&node, node_addr);
-            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)node_addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+            if (remap_to_treelet_layout) {
+                transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)node_addr + device_offset)], GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+            } else {
+                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)node_addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+            }
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
             total_nodes_accessed++;
 
@@ -2521,7 +2530,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
             GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
             GEN_RT_BVH_INSTANCE_LEAF_unpack(&instanceLeaf, leaf_addr);
-            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
+            if (remap_to_treelet_layout) {
+                transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)leaf_addr + device_offset)], GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
+            } else {
+                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_INSTANCE_LEAF_length * 4, TransactionType::BVH_INSTANCE_LEAF));
+            }
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INSTANCE_LEAF)]++;
             total_nodes_accessed++;
 
@@ -2538,7 +2551,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
             assert(instanceLeaf.BVHAddress != NULL);
             GEN_RT_BVH botLevelASAddr;
             GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
-            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + instanceLeaf.BVHAddress + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+            if (remap_to_treelet_layout) {
+                transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)leaf_addr + instanceLeaf.BVHAddress + device_offset)], GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+            } else {
+                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + instanceLeaf.BVHAddress + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+            }
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
 
             if (debugTraversal)
@@ -2590,7 +2607,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
 
                     struct GEN_RT_BVH_INTERNAL_NODE node;
                     GEN_RT_BVH_INTERNAL_NODE_unpack(&node, node_addr);
-                    transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)node_addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+                    if (remap_to_treelet_layout) {
+                        transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)node_addr + device_offset)], GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+                    } else {
+                        transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)node_addr + device_offset), GEN_RT_BVH_INTERNAL_NODE_length * 4, TransactionType::BVH_INTERNAL_NODE));
+                    }
                     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_INTERNAL_NODE)]++;
                     total_nodes_accessed++;
 
@@ -2684,7 +2705,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     stack.pop_back();
                     struct GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR leaf_descriptor;
                     GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_unpack(&leaf_descriptor, leaf_addr);
-                    transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR));
+                    if (remap_to_treelet_layout) {
+                        transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)leaf_addr + device_offset)], GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR));
+                    } else {
+                        transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PRIMITIVE_LEAF_DESCRIPTOR_length * 4, TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR));
+                    }
                     ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PRIMITIVE_LEAF_DESCRIPTOR)]++;
 
                     if (leaf_descriptor.LeafType == TYPE_QUAD)
@@ -2744,7 +2769,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             closest_objectRay = objectRay;
                             min_thit_object = thit;
                             thread->add_ray_intersect();
-                            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
+                            if (remap_to_treelet_layout) {
+                                transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)leaf_addr + device_offset)], GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
+                            } else {
+                                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF_HIT));
+                            }
                             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF_HIT)]++;
                             total_nodes_accessed++;
 
@@ -2754,7 +2783,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                             }
                         }
                         else {
-                            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF));
+                            if (remap_to_treelet_layout) {
+                                transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)leaf_addr + device_offset)], GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF));
+                            } else {
+                                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_QUAD_LEAF_length * 4, TransactionType::BVH_QUAD_LEAF));
+                            }
                             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_QUAD_LEAF)]++;
                             total_nodes_accessed++;
                         }
@@ -2767,7 +2800,11 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
                     {
                         struct GEN_RT_BVH_PROCEDURAL_LEAF leaf;
                         GEN_RT_BVH_PROCEDURAL_LEAF_unpack(&leaf, leaf_addr);
-                        transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
+                        if (remap_to_treelet_layout) {
+                            transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)leaf_addr + device_offset)], GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
+                        } else {
+                            transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + device_offset), GEN_RT_BVH_PROCEDURAL_LEAF_length * 4, TransactionType::BVH_PROCEDURAL_LEAF));
+                        }
                         ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_PROCEDURAL_LEAF)]++;
                         total_nodes_accessed++;
 
