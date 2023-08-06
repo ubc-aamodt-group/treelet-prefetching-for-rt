@@ -154,6 +154,7 @@ class cuda_sim {
   // Ray tracing memory access type stats
   unsigned g_rt_mem_access_type[static_cast<int>(TransactionType::UNDEFINED)] = {0};
   unsigned g_rt_num_hits = 0; 
+  unsigned g_rt_num_any_hits = 0; 
   bool g_rt_world_set = false;
   float3 g_rt_world_min = {0, 0, 0};
   float3 g_rt_world_max = {0, 0, 0};
@@ -164,7 +165,7 @@ class cuda_sim {
   unsigned g_max_tree_depth = 0;
   unsigned g_total_shaders = 0;
   unsigned long long g_inst_type_latency[28] = {0};
-  unsigned g_inst_class_stat[6][20];
+  unsigned g_inst_class_stat[16][20] = {};
   std::vector<std::pair<unsigned, unsigned> > g_traceray_instructions;
   
   char *cdp_latency_str;

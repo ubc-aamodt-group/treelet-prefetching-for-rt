@@ -2172,6 +2172,7 @@ void gpgpu_sim::gpu_print_stat() {
   fprintf(statfout, "\n");
 
   fprintf(statfout, "rt_num_hits = %d\n", gpgpu_ctx->func_sim->g_rt_num_hits);
+  fprintf(statfout, "rt_num_any_hits = %d\n", gpgpu_ctx->func_sim->g_rt_num_any_hits);
   fprintf(statfout, "rt_n_anyhit_rays = %d\n", gpgpu_ctx->func_sim->g_n_anyhit_rays);
   fprintf(statfout, "rt_n_closesthit_rays = %d\n", gpgpu_ctx->func_sim->g_n_closesthit_rays);
   fprintf(statfout, "rt_n_total_rays = %d\n", gpgpu_ctx->func_sim->g_n_closesthit_rays + gpgpu_ctx->func_sim->g_n_anyhit_rays);
@@ -2185,7 +2186,7 @@ void gpgpu_sim::gpu_print_stat() {
   }
   fprintf(statfout, "\n");
   fprintf(statfout, "inst_class_by_shader\n");
-  for (unsigned i=0; i<5; i++) {
+  for (unsigned i=0; i<16; i++) {
     fprintf(statfout, "%d:", i);
     for (unsigned j=0; j<20; j++) {
       fprintf(statfout, "%d\t", gpgpu_ctx->func_sim->g_inst_class_stat[i][j]);
