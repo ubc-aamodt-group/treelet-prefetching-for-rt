@@ -1421,6 +1421,11 @@ class rt_unit : public pipelined_simd_unit {
         unsigned get_total_demand_load_mf_lat() { return total_demand_load_mf_lat; }
         unsigned get_total_demand_load_mfs() { return total_demand_load_mfs; }
         unsigned get_prefetch_metadata_added() { return prefetch_metadata_added; }
+        unsigned get_prefetch_generate_issue_cycle_difference() { return prefetch_generate_issue_cycle_difference; }
+        unsigned get_tracked_counts() { return tracked_counts; }
+
+        unsigned get_matches() { return matches; }
+        unsigned get_comparisons() { return comparisons; }
         
     protected:
       void process_memory_response(mem_fetch* mf, warp_inst_t &pipe_reg);
@@ -1519,8 +1524,15 @@ class rt_unit : public pipelined_simd_unit {
       unsigned prefetches_readded_to_queue = 0;
       unsigned prefetch_metadata_added = 0;
 
+      unsigned prefetch_generate_issue_cycle_difference = 0;
+      // uint8_t* last_treelet = NULL;
+      unsigned tracked_counts = 0;
+
       unsigned total_demand_load_mf_lat = 0;
       unsigned total_demand_load_mfs = 0;
+
+      unsigned matches = 0;
+      unsigned comparisons = 0;
 
       new_addr_type most_recently_loaded_metadata_addr = NULL;
 
@@ -1988,6 +2000,7 @@ class shader_core_config : public core_config {
   bool early_metadata_load;
   bool remap_to_treelet_layout;
   unsigned treelet_remap_stride;
+  unsigned prefetch_delay;
 };
 
 struct shader_core_stats_pod {

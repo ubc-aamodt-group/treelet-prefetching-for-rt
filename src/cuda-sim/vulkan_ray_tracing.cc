@@ -400,6 +400,10 @@ void VulkanRayTracing::init(uint32_t launch_width, uint32_t launch_height)
             width = (launch_width + 7) / 8;
             height = (launch_height + 3) / 4;
             break;
+        case WARP_8X8:
+            width = (launch_width + 7) / 8;
+            height = (launch_height + 7) / 8;
+            break;
         default:
             abort();
     }
@@ -2350,8 +2354,9 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     std::map<uint8_t*, unsigned> tree_level_map;
     
 	// Create ray
+    rayCount++; // ray id starts from 1
 	Ray ray;
-	ray.make_ray(origin, direction, Tmin, Tmax);
+	ray.make_ray(origin, direction, Tmin, Tmax, rayCount);
     thread->add_ray_properties(ray);
 
 	// Set thit to max
@@ -2880,6 +2885,15 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     thread->set_rt_transactions(transactions);
     thread->set_rt_store_transactions(store_transactions);
 
+    // rayCount++; // ray id starts from 1
+    printf("RayID,%d", rayCount);
+    for (auto transaction : transactions)
+    {
+        printf(",0x%x", VulkanRayTracing::addrToTreeletID((uint8_t*)transaction.address));
+        accessedDataSize += transaction.size;
+    }
+    printf("\n");
+
     if (debugTraversal)
     {
         traversalFile.close();
@@ -3399,6 +3413,28 @@ void VulkanRayTracing::vkCmdTraceRaysKHR(
                 blockDim.y = 4;
                 gridDim.y = launch_height / 4;
                 if(launch_height % 4 != 0)
+                    gridDim.y++;
+            }
+            break;
+        case WARP_8X8:
+            if(launch_width <= 8) {
+                blockDim.x = launch_width;
+                gridDim.x = 1;
+            }
+            else {
+                blockDim.x = 8;
+                gridDim.x = launch_width / 8;
+                if(launch_width % 8 != 0)
+                    gridDim.x++;
+            }
+            if(launch_height <= 8) {
+                blockDim.y = launch_height;
+                gridDim.y = 1;
+            }
+            else {
+                blockDim.y = 8;
+                gridDim.y = launch_height / 8;
+                if(launch_height % 8 != 0)
                     gridDim.y++;
             }
             break;

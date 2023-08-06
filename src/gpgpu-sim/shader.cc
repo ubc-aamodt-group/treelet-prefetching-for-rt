@@ -3418,7 +3418,7 @@ void rt_unit::cycle() {
       }
     }
 
-    if (m_config->m_treelet_prefetch) {
+    if (m_config->m_treelet_prefetch && (GPGPU_Context()->the_gpgpusim->g_the_gpu->gpu_sim_cycle%m_config->prefetch_delay == 0)) {
       uint8_t* prefetched_treelet_root = nullptr;
       uint8_t* second_prefetched_treelet_root = nullptr;
 
@@ -3447,6 +3447,46 @@ void rt_unit::cycle() {
           }
         }
         submit_prefetch = true;
+
+        // Compare to the hierarical most popular treelet to see how often they match
+        std::map <uint8_t*, int> overall_warp_max_treelets;
+        for (auto warp_inst : m_current_warps) {
+          // tally up the treelets in a warp
+          std::map <uint8_t*, int> per_warp_treelets;
+          for (int i = 0; i < 32; i++) {
+            if (!warp_inst.second.get_thread_info(i).RT_mem_accesses.empty()) {
+              new_addr_type first_address = warp_inst.second.get_thread_info(i).RT_mem_accesses.front().address;
+              uint8_t* treelet_root_bin = VulkanRayTracing::addrToTreeletID((uint8_t*)first_address);
+              per_warp_treelets[treelet_root_bin] += 1;
+            }
+          }
+          // find its max
+          int largest = -1;
+          uint8_t* per_war_largest_treelet = nullptr;
+          for (auto treelet_addr : per_warp_treelets) {
+            if (treelet_addr.second > largest) {
+              per_war_largest_treelet = treelet_addr.first;
+              largest = treelet_addr.second;
+            }
+          }
+
+          // insert in overall_warp_max_treelets
+          overall_warp_max_treelets[per_war_largest_treelet] += 1;
+        }
+        // find the max in overall_warp_max_treelets
+        int largest_overall = -1;
+        uint8_t* largest_overall_treelet = nullptr;
+        for (auto treelet_addr : overall_warp_max_treelets) {
+          if (treelet_addr.second > largest_overall) {
+            largest_overall_treelet = treelet_addr.first;
+            largest_overall = treelet_addr.second;
+          }
+        }
+        // printf("largest_overall_treelet: 0x%x, real_largest_treelet: 0x%x\n", largest_overall_treelet, prefetched_treelet_root);
+        if (largest_overall_treelet == prefetched_treelet_root) {
+          matches++;
+        }
+        comparisons++;
       }
       else if (m_config->m_treelet_prefetch_heuristic == 1) { // Prefetch Heuristic 1: Only prefetch if treelet is the most popular above a % threshold
         // Find the most popular treelet and calculate how popular it is
@@ -4543,6 +4583,12 @@ mem_fetch* rt_unit::process_prefetch_queue(warp_inst_t &inst) {
   prefetch_info.prefetch_generation_time = prefetch_generation_cycle;
   prefetch_info.prefetch_issue_time = m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle;
   prefetch_request_tracker[prefetch_info.m_block_addr].push_back(prefetch_info);
+
+  if (VulkanRayTracing::isTreeletRoot((uint8_t*)next_addr)) {
+    prefetch_generate_issue_cycle_difference += prefetch_info.prefetch_issue_time - prefetch_info.prefetch_generation_time;
+    // last_treelet = VulkanRayTracing::addrToTreeletID((uint8_t*)next_addr);
+    tracked_counts++;
+  }
 
   return mf;
 }

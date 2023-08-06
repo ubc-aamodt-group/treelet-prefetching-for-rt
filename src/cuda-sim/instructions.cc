@@ -6740,6 +6740,11 @@ void load_ray_launch_id_impl(const ptx_instruction *pI, ptx_thread_info *thread)
       v[1] = thread->get_tid().y + thread->get_ctaid().y * 4;
       v[2] = thread->get_ctaid().z;
       break;
+    case WARP_8X8:
+      v[0] = thread->get_tid().x + thread->get_ctaid().x * 8;
+      v[1] = thread->get_tid().y + thread->get_ctaid().y * 8;
+      v[2] = thread->get_ctaid().z;
+      break;
     default:
     abort();
   }

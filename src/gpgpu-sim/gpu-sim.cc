@@ -462,6 +462,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-treelet_remap_stride", OPT_UINT32, &treelet_remap_stride,
       "separates the treelet nodes by a stride to for load balancing according to the DRAM partition stride",
       "0");
+  option_parser_register(
+      opp, "-prefetch_delay", OPT_UINT32, &prefetch_delay,
+      "prefetch_delay",
+      "32");
   option_parser_register(opp, "-gpgpu_cache:il1", OPT_CSTR,
                          &m_L1I_config.m_config_string,
                          "shader L1 instruction cache config "
@@ -1742,6 +1746,7 @@ void gpgpu_sim::gpu_print_stat() {
   //   fprintf(statfout, "0x%lx: %d\n", block.first, block.second);
   // }
 
+  unsigned unclassified_but_accessed = 0;
   std::vector<unsigned> total_prefetch_effectiveness = {0, 0, 0, 0, 0};
   std::vector<unsigned> prefetch_effectiveness_per_cluster; // TOO_LATE:{0,0,0...,0,0}, LATE:{0,0,0,0,0},....
   for(int n=0; n < m_config.num_cluster() * 5; n++) prefetch_effectiveness_per_cluster.push_back((unsigned)0);
@@ -1761,7 +1766,9 @@ void gpgpu_sim::gpu_print_stat() {
       if (accessed) {
         for (auto &prefetch_info : vec.second) {
           if (prefetch_info.effectiveness == UNCLASSIFIED) {
-            prefetch_info.effectiveness = TOO_LATE;
+            unclassified_but_accessed++;
+            // prefetch_info.effectiveness = TOO_LATE;
+            continue;
           }
           total_prefetch_effectiveness[prefetch_info.effectiveness]++;
           prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
@@ -1786,6 +1793,7 @@ void gpgpu_sim::gpu_print_stat() {
     //   prefetch_effectiveness_per_cluster[i + prefetch_info.effectiveness * m_config.num_cluster()]++;
     // }
   }
+  fprintf(statfout, "unclassified_but_accessed=%d\n", unclassified_but_accessed);
   fprintf(statfout, "\n");
 
   fprintf(statfout, "prefetch_treelet_switches: [Clusters 0, ..., N, Total Sum]\n");
@@ -1885,6 +1893,31 @@ void gpgpu_sim::gpu_print_stat() {
   fprintf(statfout, "avg_rt_demand_load_mf_lat=%f\n", avg_rt_demand_load_mf_lat);
 
   fprintf(statfout, "\n");
+
+  // fprintf(statfout, "avg_prefetch_generate_issue_cycle_difference: [Clusters 0, ..., N, Total Sum]\n");
+  unsigned total_prefetch_generate_issue_cycle_difference = 0;
+  unsigned total_tracked_counts = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    // fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_demand_load_mf_lat());
+    total_prefetch_generate_issue_cycle_difference += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_demand_load_mf_lat();
+    total_tracked_counts += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_tracked_counts();
+  }
+  if (total_tracked_counts != 0)
+    fprintf(statfout, "avg_prefetch_generate_issue_cycle_difference=%f\n", double(total_prefetch_generate_issue_cycle_difference/total_tracked_counts));
+
+  unsigned total_matches = 0;
+  unsigned total_comparisons = 0;
+  for (int i = 0; i < m_config.num_cluster(); i++) {
+    // fprintf(statfout, "%d ", m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_total_demand_load_mf_lat());
+    total_matches += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_matches();
+    total_comparisons += m_cluster[i]->get_m_core()[0]->get_m_rt_unit()->get_comparisons();
+    // printf("total_matches: %d\n", total_matches);
+    // printf("total_comparisons: %d\n", total_comparisons);
+  }
+  if (total_comparisons != 0) {
+    fprintf(statfout, "total_comparisons=%d\n", total_comparisons);
+    fprintf(statfout, "hierarchical_comparator_accuracy=%f\n", double(double(total_matches)/double(total_comparisons)));
+  }
 
   // // Print out the whole treelet structure whether or not the nodes are accessed
   // fprintf(statfout, "Treelet Structure\n");

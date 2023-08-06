@@ -101,6 +101,7 @@ typedef enum
     WARP_32X1 = 0,
     WARP_16X2,
     WARP_8X4,
+    WARP_8X8,
 } warp_pixel_mapping;
 
 
