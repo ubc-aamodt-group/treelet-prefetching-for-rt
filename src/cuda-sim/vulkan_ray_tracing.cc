@@ -442,6 +442,14 @@ void VulkanRayTracing::init(uint32_t launch_width, uint32_t launch_height)
         }
 
     }
+
+    anyhit_table = new Baseline_warp_intersection_table**[width];
+    for(int i = 0; i < width; i++)
+    {
+        anyhit_table[i] = new Baseline_warp_intersection_table*[height];
+        for(int j = 0; j < height; j++)
+            anyhit_table[i][j] = new Baseline_warp_intersection_table();
+    }
 }
 
 
@@ -2242,13 +2250,13 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
 
         memoryTransactionsFile << std::endl;
     }
-    anyhit_table = new Baseline_warp_intersection_table**[width];
-    for(int i = 0; i < width; i++)
-    {
-        anyhit_table[i] = new Baseline_warp_intersection_table*[height];
-        for(int j = 0; j < height; j++)
-            anyhit_table[i][j] = new Baseline_warp_intersection_table();
-    }
+    // anyhit_table = new Baseline_warp_intersection_table**[width];
+    // for(int i = 0; i < width; i++)
+    // {
+    //     anyhit_table[i] = new Baseline_warp_intersection_table*[height];
+    //     for(int j = 0; j < height; j++)
+    //         anyhit_table[i][j] = new Baseline_warp_intersection_table();
+    // }
 }
 
 void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
@@ -2986,13 +2994,13 @@ void VulkanRayTracing::traceRay(VkAccelerationStructureKHR _topLevelAS,
     thread->set_rt_store_transactions(store_transactions);
 
     // rayCount++; // ray id starts from 1
-    printf("RayID,%d", rayCount);
-    for (auto transaction : transactions)
-    {
-        printf(",0x%x", VulkanRayTracing::addrToTreeletID((uint8_t*)transaction.address));
-        accessedDataSize += transaction.size;
-    }
-    printf("\n");
+    // printf("RayID,%d", rayCount);
+    // for (auto transaction : transactions)
+    // {
+    //     printf(",0x%x", VulkanRayTracing::addrToTreeletID((uint8_t*)transaction.address));
+    //     accessedDataSize += transaction.size;
+    // }
+    // printf("\n");
 
     if (debugTraversal)
     {
@@ -4907,9 +4915,24 @@ void* VulkanRayTracing::gpgpusim_alloc(uint32_t size)
         memory_space *mem = context->get_device()->get_gpgpu()->get_global_memory();
         mem->bind_vulkan_buffer(bufferAddr, size, devPtr);
     }
-
+    
     return devPtr;
 }
+
+void* VulkanRayTracing::gpgpusim_malloc(uint32_t size)
+{
+    gpgpu_context *ctx = GPGPU_Context();
+    CUctx_st *context = GPGPUSim_Context(ctx);
+    void* devPtr = context->get_device()->get_gpgpu()->gpu_malloc(size);
+    if (g_debug_execution >= 3) {
+        printf("GPGPU-Sim PTX: gpgpusim_allocing %zu bytes starting at 0x%llx..\n",
+            size, (unsigned long long)devPtr);
+        ctx->api->g_mallocPtr_Size[(unsigned long long)devPtr] = size;
+    }
+    assert(devPtr);
+    return devPtr;
+}
+
 
 void* VulkanRayTracing::allocBuffer(void* bufferAddr, uint64_t bufferSize)
 {
@@ -4924,4 +4947,3 @@ void* VulkanRayTracing::allocBuffer(void* bufferAddr, uint64_t bufferSize)
     mem->bind_vulkan_buffer(bufferAddr, bufferSize, devPtr);
     return devPtr;
 }
-

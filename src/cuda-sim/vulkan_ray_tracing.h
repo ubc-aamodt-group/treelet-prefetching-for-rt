@@ -284,7 +284,7 @@ private:
     static void* launcher_descriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
     static void* launcher_deviceDescriptorSets[MAX_DESCRIPTOR_SETS][MAX_DESCRIPTOR_SET_BINDINGS];
     static std::vector<void*> child_addrs_from_driver;
-    static std::map<void*, void*> VulkanRayTracing::blas_addr_map;
+    static std::map<void*, void*> blas_addr_map;
     static void* tlas_addr;
     static bool dumped;
     static bool _init_;
