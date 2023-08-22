@@ -182,6 +182,7 @@ typedef struct StackEntry {
     bool topLevel;
     bool leaf;
     int size;
+    bool isBlasRoot = false;
 
     float worldToObject_tMultiplier;
     GEN_RT_BVH_INSTANCE_LEAF instanceLeaf;
@@ -192,6 +193,7 @@ typedef struct StackEntry {
     StackEntry() {}
     StackEntry(uint8_t* addr, bool topLevel, bool leaf): addr(addr), topLevel(topLevel), leaf(leaf) {}
     StackEntry(uint8_t* addr, bool topLevel, bool leaf, int size): addr(addr), topLevel(topLevel), leaf(leaf), size(size) {}
+    StackEntry(uint8_t* addr, bool topLevel, bool leaf, int size, bool isBlasRoot): addr(addr), topLevel(topLevel), leaf(leaf), size(size), isBlasRoot(isBlasRoot) {}
     StackEntry(uint8_t* addr, bool topLevel, bool leaf, float worldToObject_tMultiplier, GEN_RT_BVH_INSTANCE_LEAF instanceLeaf, float4x4 worldToObjectMatrix, float4x4 objectToWorldMatrix, Ray objectRay): addr(addr), topLevel(topLevel), leaf(leaf), worldToObject_tMultiplier(worldToObject_tMultiplier), instanceLeaf(instanceLeaf), worldToObjectMatrix(worldToObjectMatrix), objectToWorldMatrix(objectToWorldMatrix), objectRay(objectRay) {}
 
     bool operator<(const StackEntry &o)  const

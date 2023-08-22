@@ -970,8 +970,9 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 assert(instanceLeaf.BVHAddress != NULL);
                 GEN_RT_BVH botLevelASAddr;
                 GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
+                assert(blas_addr_map.find((void*)(void *)(leaf_addr + instanceLeaf.BVHAddress)) != blas_addr_map.end());
                 remaining_bytes -= GEN_RT_BVH_length * 4;
-                nodes_in_current_treelet.push_back(StackEntry((uint8_t *)(leaf_addr + instanceLeaf.BVHAddress), true, true, GEN_RT_BVH_length * 4));
+                nodes_in_current_treelet.push_back(StackEntry((uint8_t *)(leaf_addr + instanceLeaf.BVHAddress), true, true, GEN_RT_BVH_length * 4, true));
                 assert(remaining_bytes >= 0);
                 total_bvh_size += GEN_RT_BVH_length * 4;
 
@@ -1133,12 +1134,26 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 // Move the first treelet node in treelet_roots_pending_work_queue to completed_treelet_roots
                 StackEntry completed_treelet = treelet_roots_pending_work_queue.front();
                 StackEntry completed_treelet_device_addr = treelet_roots_pending_work_queue.front();
-                completed_treelet_device_addr.addr += device_offset;
+                if (completed_treelet_device_addr.isBlasRoot) {
+                    assert(blas_addr_map.find((void*)completed_treelet_device_addr.addr) != blas_addr_map.end());
+                    int64_t offset = (uint64_t)blas_addr_map[(void*)completed_treelet_device_addr.addr] - (uint64_t)completed_treelet_device_addr.addr;
+                    completed_treelet_device_addr.addr += offset;
+                }
+                else {
+                    completed_treelet_device_addr.addr += device_offset;
+                }
                 // std::cout << "Treelet root " << (void*)completed_treelet.addr << " done: size limit reached" << std::endl;
                 std::vector<StackEntry> node_list = nodes_in_current_treelet;
                 for (int i = 0; i < node_list.size(); i++)
                 {
-                    node_list[i].addr += device_offset;
+                    if (node_list[i].isBlasRoot) {
+                        assert(blas_addr_map.find((void*)node_list[i].addr) != blas_addr_map.end());
+                        int64_t offset = (uint64_t)blas_addr_map[(void*)node_list[i].addr] - (uint64_t)node_list[i].addr;
+                        node_list[i].addr += offset;
+                    }
+                    else {
+                        node_list[i].addr += device_offset;
+                    } 
                 }
                 completed_treelet_roots[completed_treelet_device_addr] = node_list;
                 completed_treelet_roots_addr_only[completed_treelet_device_addr.addr] = node_list;
@@ -1159,7 +1174,14 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                     {
                         children.push_back(stack[i]);
                         StackEntry tmp = stack[i];
-                        tmp.addr += device_offset;
+                        if (tmp.isBlasRoot) {
+                            assert(blas_addr_map.find((void*)tmp.addr) != blas_addr_map.end());
+                            int64_t offset = (uint64_t)blas_addr_map[(void*)tmp.addr] - (uint64_t)tmp.addr;
+                            tmp.addr += offset;
+                        }
+                        else {
+                            tmp.addr += device_offset;
+                        } 
                         children_device_addr.push_back(tmp);
                     }
                 }
@@ -1196,12 +1218,26 @@ void VulkanRayTracing::createTreelets(VkAccelerationStructureKHR _topLevelAS, in
                 // Move the first treelet node in treelet_roots_pending_work_queue to completed_treelet_roots
                 StackEntry completed_treelet = treelet_roots_pending_work_queue.front();
                 StackEntry completed_treelet_device_addr = treelet_roots_pending_work_queue.front();
-                completed_treelet_device_addr.addr += device_offset;
+                if (completed_treelet_device_addr.isBlasRoot) {
+                    assert(blas_addr_map.find((void*)completed_treelet_device_addr.addr) != blas_addr_map.end());
+                    int64_t offset = (uint64_t)blas_addr_map[(void*)completed_treelet_device_addr.addr] - (uint64_t)completed_treelet_device_addr.addr;
+                    completed_treelet_device_addr.addr += offset;
+                }
+                else {
+                    completed_treelet_device_addr.addr += device_offset;
+                }
                 // std::cout << "Treelet root " << (void*)completed_treelet.addr << " done: no more nodes to include" << std::endl;
                 std::vector<StackEntry> node_list = nodes_in_current_treelet;
                 for (int i = 0; i < node_list.size(); i++)
                 {
-                    node_list[i].addr += device_offset;
+                    if (node_list[i].isBlasRoot) {
+                        assert(blas_addr_map.find((void*)node_list[i].addr) != blas_addr_map.end());
+                        int64_t offset = (uint64_t)blas_addr_map[(void*)node_list[i].addr] - (uint64_t)node_list[i].addr;
+                        node_list[i].addr += offset;
+                    }
+                    else {
+                        node_list[i].addr += device_offset;
+                    } 
                 }
                 completed_treelet_roots[completed_treelet_device_addr] = node_list;
                 completed_treelet_roots_addr_only[completed_treelet_device_addr.addr] = node_list;
@@ -1457,9 +1493,13 @@ void VulkanRayTracing::remapBVHToTreeletLayout()
         {
             if (node.addr != root.first.addr) {
                 assert(new_node_addr <= new_treelet_root_addr + (i+1) * (GPGPU_Context()->the_gpgpusim->g_the_gpu->get_config().max_treelet_size + treelet_remap_stride));
-                assert(original_bvh_to_treelet_bvh_mapping.count(node.addr) == 0);
+                // The assert below triggers when the same blas addr appear in multiple treelets.
+                // To solve this problem i need to finish forming the current treelet when encouvering a top level leaf node.
+                // For now the my hack is to just not add this node to the treelet bvh map with the condition in the if statement when adding new nodes.
+                // assert(original_bvh_to_treelet_bvh_mapping.count(node.addr) == 0); 
                 assert(new_node_addr > treelet_layout_bvh);
-                original_bvh_to_treelet_bvh_mapping[node.addr] = new_node_addr;
+                if (original_bvh_to_treelet_bvh_mapping.count(node.addr) == 0)
+                    original_bvh_to_treelet_bvh_mapping[node.addr] = new_node_addr;
                 new_node_addr += (node.size);
             }
         }   
@@ -1506,7 +1546,7 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
 
     // Convert device address back to host address for func sim. This will break if the device address was modified then passed to traceRay. Should be fixable if I also record the size when I malloc then I can check the bounds of the device address.
     uint8_t* deviceAddress = nullptr;
-    int64_t device_offset = 0;
+    int64_t device_offset = (uint64_t)tlas_addr - (uint64_t)_topLevelAS;
     if (use_external_launcher)
     {
         deviceAddress = (uint8_t*)_topLevelAS;
@@ -1860,10 +1900,17 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
             assert(instanceLeaf.BVHAddress != NULL);
             GEN_RT_BVH botLevelASAddr;
             GEN_RT_BVH_unpack(&botLevelASAddr, (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress));
+
+            // BLAS offset
+            uint8_t * botLevelRootAddr = (uint8_t *)(leaf_addr + instanceLeaf.BVHAddress);
+            RT_DPRINTF("Traversing BLAS %p -> %p\n", (void*)botLevelRootAddr, blas_addr_map[(void*)botLevelRootAddr]);
+            assert(blas_addr_map.find((void*)botLevelRootAddr) != blas_addr_map.end());
+            int64_t blas_offset = (uint64_t)blas_addr_map[(void*)botLevelRootAddr] - (uint64_t)botLevelRootAddr;
+
             if (remap_to_treelet_layout) {
-                transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)leaf_addr + instanceLeaf.BVHAddress + device_offset)], GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+                transactions.push_back(MemoryTransactionRecord(original_bvh_to_treelet_bvh_mapping[(uint8_t*)((uint64_t)leaf_addr + instanceLeaf.BVHAddress + blas_offset)], GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
             } else {
-                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + instanceLeaf.BVHAddress + device_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
+                transactions.push_back(MemoryTransactionRecord((uint8_t*)((uint64_t)leaf_addr + instanceLeaf.BVHAddress + blas_offset), GEN_RT_BVH_length * 4, TransactionType::BVH_STRUCTURE));
             }
             ctx->func_sim->g_rt_mem_access_type[static_cast<int>(TransactionType::BVH_STRUCTURE)]++;
 
@@ -1875,7 +1922,7 @@ void VulkanRayTracing::traceRayWithTreelets(VkAccelerationStructureKHR _topLevel
             float worldToObject_tMultiplier;
             Ray objectRay = make_transformed_ray(ray, worldToObjectMatrix, &worldToObject_tMultiplier);
             
-            uint8_t * botLevelRootAddr ;
+            // uint8_t * botLevelRootAddr ;
             botLevelRootAddr = ((uint8_t *)((uint64_t)leaf_addr + instanceLeaf.BVHAddress)) + botLevelASAddr.RootNodeOffset;
 
             uint8_t* curr_treelet;
