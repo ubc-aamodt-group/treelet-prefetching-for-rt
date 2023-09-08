@@ -6,7 +6,7 @@ Welcome to Vulkan-Sim, a cycle level GPU simulator for Vulkan ray tracing worklo
 This document will walk you through Vulkan-Sim installation.
 
 If you use this code in your research, please cite:
-> Yuan Hsi Chou, Tyler Nowicki, Tor M. Aamodt, Treelet Prefetching For Ray Tracing, In proceedings of the ACM/IEEE International Symposium on Microarchitecture (MICRO 2023), Toronto, Canada, October 28 – November 1, 2023.
+> Yuan Hsi Chou, Tyler Nowicki, Tor M. Aamodt, Treelet Prefetching For Ray Tracing, In proceedings of the ACM/IEEE International Symposium on Microarchitecture (MICRO 2023), Toronto, Ontario, Canada, October 28 – November 1, 2023.
 
 If you use Vulkan-Sim in your research, please cite:  
 > Mohammadreza Saed, Yuan Hsi Chou, Lufei Liu, Tyler Nowicki, Tor M. Aamodt, Vulkan-Sim: A GPU Architecture Simulator for Ray Tracing, In proceedings of the ACM/IEEE International Symposium on Microarchitecture (MICRO 2022), Chicago, Illinois, October 1–5, 2022.
