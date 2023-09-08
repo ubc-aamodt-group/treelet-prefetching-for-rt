@@ -1,8 +1,133 @@
+This is the code repo for the paper **Treelet Prefetching For Ray Tracing**. This work is built on top of Vulkan-Sim 2.0.0 and uses LumiBench for the ray tracing workloads.
+
+#  Introduction   
+Welcome to Vulkan-Sim, a cycle level GPU simulator for Vulkan ray tracing workloads. Vulkan-Sim models a modern GPU architecture with a baseline RT unit architecture of our own based on past literature such as Intersection Prediction for Accelerated GPU Ray Tracing by Liu et al. from MICRO 2021.
+
+This document will walk you through Vulkan-Sim installation.
+
+If you use this code in your research, please cite:
+> Yuan Hsi Chou, Tyler Nowicki, Tor M. Aamodt, Treelet Prefetching For Ray Tracing, In proceedings of the ACM/IEEE International Symposium on Microarchitecture (MICRO 2023), Toronto, Canada, October 28 – November 1, 2023.
+
+If you use Vulkan-Sim in your research, please cite:  
+> Mohammadreza Saed, Yuan Hsi Chou, Lufei Liu, Tyler Nowicki, Tor M. Aamodt, Vulkan-Sim: A GPU Architecture Simulator for Ray Tracing, In proceedings of the ACM/IEEE International Symposium on Microarchitecture (MICRO 2022), Chicago, Illinois, October 1–5, 2022.
+
+Vulkan-Sim version 2.0.0 and above is also compatible with LumiBench. If you use LumiBench in your research, please cite:  
+> Lufei Liu, Mohammadreza Saed, Yuan Hsi Chou, Davit Grigoryan, Tyler Nowicki, Tor M. Aamodt, LumiBench: A Benchmark Suite for Hardware Ray Tracing, In proceedings of the IEEE International Symposium on Workload Characterization (IISWC), Ghent, Belgium, October 1–3, 2023.
+
+#  Required Software/Packages 
+- Ubuntu 20.04
+- Embree3 (embree-3.12 or later, download from https://www.embree.org/)
+- CUDA 10/11
+- gcc-9
+- g++-9
+
+Please install the following required packages for Vulkan-Sim.
+``` bash
+sudo apt install -y build-essential git ninja-build meson libboost-all-dev xutils-dev bison zlib1g-dev flex libglu1-mesa-dev libxi-dev libxmu-dev libdrm-dev llvm libelf-dev libwayland-dev wayland-protocols libwayland-egl-backend-dev libxcb-glx0-dev libxcb-shm0-dev libx11-xcb-dev libxcb-dri2-0-dev libxcb-dri3-dev libxcb-present-dev libxshmfence-dev libxxf86vm-dev libxrandr-dev libglm-dev
+```
+
+
+#  Vulkan-Sim Directory Setup
+1. Please create a folder to contain all components of Vulkan-Sim.
+```
+mkdir vulkan-sim-root/
+cd vulkan-sim-root/
+```
+2. Clone the following repos in the folder you just created. Ensure that the cloned Mesa version matches the Vulkan-Sim version. For example, Vulkan-Sim version 2.0.0 is only supported with mesa-vulkan-sim v2.0.0 release. 
+``` bash
+git clone https://github.com/ubc-aamodt-group/treelet-prefetching-for-rt
+git clone https://github.com/ubc-aamodt-group/mesa-vulkan-sim
+```
+3. The resulting folder structure should look like this.
+```
+vulkan-sim-root/-|- vulkan-sim/
+                 |- mesa-vulkan-sim/
+                 |- embree-3.13.4.x86_64.linux/ (Embree3 can be installed anywhere, change mesa/src/intel/vulkan meson.build to match)
+```
+
+
+#  Vulkan-Sim Installation Instructions 
+Commands here assume you have navigated to `vulkan-sim-root/`. Make sure CUDA Toolkit and embree3 are installed.
+
+1. Install the Vulkan SDK from the LunarG website.The commands for the latest version from their website are copied here.
+``` bash
+wget -qO - http://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-focal.list http://packages.lunarg.com/vulkan/lunarg-vulkan-focal.list
+sudo apt update
+sudo apt install vulkan-sdk
+```
+
+2. Set environment variables
+``` bash
+# Change this to your CUDA install path
+export CUDA_INSTALL_PATH=/usr/local/cuda-11.7
+# Source this from your Embree path
+source embree-3.13.4.x86_64.linux/embree-vars.sh
+```
+
+3. Build Vulkan-Sim + Mesa. Please ignore the error in the first `ninja -C build/ install`, this is normal.
+``` bash
+cd vulkan-sim/
+source setup_environment
+
+cd ../mesa-vulkan-sim/
+meson --prefix="${PWD}/lib" build -Dvulkan-drivers=swrast -Dgallium-drivers=swrast -Dplatforms=x11 -D b_lundef=false -D buildtype=debug
+# This compilation produces files necessary to Vulkan-Sim but is expected to fail.
+ninja -C build/ install 
+
+export VK_ICD_FILENAMES=${PWD}/lib/share/vulkan/icd.d/lvp_icd.x86_64.json
+cd ../vulkan-sim/
+make -j
+
+cd ../mesa-vulkan-sim/
+# This compilation is expected to succeed.
+ninja -C build/ install
+```
+
+# Running RayTracingInVulkan (LumiBench) with Vulkan-Sim
+1. Download RayTracingInVulkan from our repo to a local folder
+``` bash
+git clone https://github.com/ubc-aamodt-group/RayTracingInVulkan.git
+```
+2. Compile RayTracingInVulkan
+``` bash
+cd RayTracingInVulkan/
+sudo apt-get -y install cmake curl unzip tar libxi-dev libxinerama-dev libxcursor-dev xorg-dev
+./vcpkg_linux.sh
+./build_linux.sh
+```
+3. Copy GPGPU-Sim configurations to the binary directory
+``` bash
+# Change <vulkan-sim-root> to your own path!
+cp <vulkan-sim-root>/vulkan-sim/configs/tested-cfgs/SM75_RTX2060/* build/linux/bin/.
+```
+4. Run RayTracingInVulkan
+``` bash
+cd build/linux/bin/
+# ./RayTracer --scene <scene number> --height <height> --width <width> --samples <spp>
+./RayTracer --scene 18 --width 128 --height 128 --samples 2
+```
+
+Please refer to the README in RayTracingInVulkan for more information. 
+
+Note that Vulkan-Sim version 2.0.0 no longer supports the trace runner. 
+
+#  Troubleshooting   
+- If meson indicates missing libraries when compiling mesa, please follow the instructions and install the corresponding packages. E.g: If missing library `elf`, then install the package with `sudo apt install libelf-dev`
+- If mesa has problems linking to `embree` or `libcudart`, while in the mesa folder please check the file `src/intel/vulkan/meson.build` and make sure `embree_lib_dir`, `embree_header_dir`, and `#gpgpusim_lib_dir` have correct paths. If there is still an error, try using absolute paths.
+- If there are errors linking to `libboost` even after installing `libboost-all-dev` through your package manager, you might need to download the library from https://www.boost.org/ and manually link to it in the `Makefile`.
+- If there are errors linking to `libcudart`, double check the `GPGPUSIM_PATH` in the `Makefile`.
+If the Vulkan application isnt invoking Vulkan-Sim, make sure the path of `$VK_ICD_FILENAMES` is correct when exporting. 
+```
+export VK_ICD_FILENAMES=<vulkan-sim-root>/mesa-vulkan-sim/lib/share/vulkan/icd.d/lvp_icd.x86_64.json
+```
+
+# Original GPGPU-Sim README
 Welcome to GPGPU-Sim, a cycle-level simulator modeling contemporary graphics
 processing units (GPUs) running GPU computing workloads written in CUDA or
 OpenCL. Also included in GPGPU-Sim is a performance visualization tool called
-AerialVision and a configurable and extensible power model called AccelWattch.
-GPGPU-Sim and AccelWattch have been rigorously validated with performance and
+AerialVision and a configurable and extensible energy model called GPUWattch.
+GPGPU-Sim and GPUWattch have been rigorously validated with performance and
 power measurements of real hardware GPUs.
 
 This version of GPGPU-Sim has been tested with a subset of CUDA version 4.2,
@@ -11,11 +136,6 @@ This version of GPGPU-Sim has been tested with a subset of CUDA version 4.2,
 Please see the copyright notice in the file COPYRIGHT distributed with this
 release in the same directory as this file.
 
-GPGPU-Sim 4.0 is compatible with Accel-Sim simulation framework. With the support 
-of Accel-Sim, GPGPU-Sim 4.0 can run NVIDIA SASS traces (trace-based simulation) 
-generated by NVIDIA's dynamic binary instrumentation tool (NVBit). For more information 
-about Accel-Sim, see [https://accel-sim.github.io/](https://accel-sim.github.io/)
-
 If you use GPGPU-Sim 4.0 in your research, please cite:
 
 Mahmoud Khairy, Zhesheng Shen, Tor M. Aamodt, Timothy G Rogers.
@@ -23,13 +143,14 @@ Accel-Sim: An Extensible Simulation Framework for Validated GPU Modeling.
 In proceedings of the 47th IEEE/ACM International Symposium on Computer Architecture (ISCA),
 May 29 - June 3, 2020.
 
-If you use CuDNN or PyTorch support (execution-driven simulation), checkpointing or our new debugging tool for functional 
+If you use CuDNN or PyTorch support, checkpointing or our new debugging tool for functional 
 simulation errors in GPGPU-Sim for your research, please cite:
 
 Jonathan Lew, Deval Shah, Suchita Pati, Shaylin Cattell, Mengchi Zhang, Amruth Sandhupatla, 
 Christopher Ng, Negar Goli, Matthew D. Sinclair, Timothy G. Rogers, Tor M. Aamodt
 Analyzing Machine Learning Workloads Using a Detailed GPU Simulator, arXiv:1811.08933,
 https://arxiv.org/abs/1811.08933
+
 
 If you use the Tensor Core model in GPGPU-Sim or GPGPU-Sim's CUTLASS Library 
 for your research please cite:
@@ -38,11 +159,12 @@ Md Aamir Raihan, Negar Goli, Tor Aamodt,
 Modeling Deep Learning Accelerator Enabled GPUs, arXiv:1811.08309, 
 https://arxiv.org/abs/1811.08309
 
-If you use the AccelWattch power model in your research, please cite:
+If you use the GPUWattch energy model in your research, please cite:
 
-Vijay Kandiah, Scott Peverelle, Mahmoud Khairy, Junrui Pan, Amogh Manjunath, Timothy G. Rogers, Tor M. Aamodt, and Nikos Hardavellas. 2021.
-AccelWattch: A Power Modeling Framework for Modern GPUs. In MICRO54: 54th Annual IEEE/ACM International Symposium on Microarchitecture
-(MICRO ’21), October 18–22, 2021, Virtual Event, Greece.
+Jingwen Leng, Tayler Hetherington, Ahmed ElTantawy, Syed Gilani, Nam Sung Kim,
+Tor M. Aamodt, Vijay Janapa Reddi, GPUWattch: Enabling Energy Optimizations in
+GPGPUs, In proceedings of the ACM/IEEE International Symposium on Computer
+Architecture (ISCA 2013), Tel-Aviv, Israel, June 23-27, 2013.
 
 If you use the support for CUDA dynamic parallelism in your research, please cite:
 
@@ -61,8 +183,8 @@ This file contains instructions on installing, building and running GPGPU-Sim.
 Detailed documentation on what GPGPU-Sim models, how to configure it, and a
 guide to the source code can be found here: <http://gpgpu-sim.org/manual/>.
 Instructions for building doxygen source code documentation are included below.
-
-Previous versions of GPGPU-Sim (3.2.0 to 4.1.0) included the [GPUWattch Energy model](http://gpgpu-sim.org/gpuwattch/) which has been replaced by AccelWattch version 1.0 in GPGPU-Sim version 4.2.0. AccelWattch supports modern GPUs and is validated against a NVIDIA Volta QV100 GPU. Detailed documentation on AccelWattch can be found here: [AccelWattch Overview](https://github.com/VijayKandiah/accel-sim-framework#accelwattch-overview) and [AccelWattch MICRO'21 Artifact Manual](https://github.com/VijayKandiah/accel-sim-framework/blob/release/AccelWattch.md).
+Detailed documentation on GPUWattch including how to configure it and a guide
+to the source code can be found here: <http://gpgpu-sim.org/gpuwattch/>.
 
 If you have questions, please sign up for the google groups page (see
 gpgpu-sim.org), but note that use of this simulator does not imply any level of
@@ -107,19 +229,20 @@ library (part of the CUDA toolkit). Code to interface with the CUDA Math
 library is contained in cuda-math.h, which also includes several structures
 derived from vector_types.h (one of the CUDA header files).
 
-## AccelWattch Power Model
+## GPUWattch Energy Model
 
-AccelWattch (introduced in GPGPU-Sim 4.2.0) was developed by researchers at 
-Northwestern University, Purdue University, and the University of British Columbia. 
-Contributors to AccelWattch include Nikos Hardavellas's research group at Northwestern University: 
-Vijay Kandiah; Tor Aamodt's research group at the University of British Columbia: Scott Peverelle; 
-and Timothy Rogers's research group at Purdue University: Mahmoud Khairy, Junrui Pan, and Amogh Manjunath. 
+GPUWattch (introduced in GPGPU-Sim 3.2.0) was developed by researchers at the
+University of British Columbia, the University of Texas at Austin, and the
+University of Wisconsin-Madison. Contributors to GPUWattch include Tor
+Aamodt's research group at the University of British Columbia: Tayler
+Hetherington and Ahmed ElTantawy; Vijay Reddi's research group at the
+University of Texas at Austin: Jingwen Leng; and Nam Sung Kim's research group
+at the University of Wisconsin-Madison: Syed Gilani.
 
-AccelWattch leverages McPAT, which was developed by Sheng Li et al. at the
+GPUWattch leverages McPAT, which was developed by Sheng Li et al. at the
 University of Notre Dame, Hewlett-Packard Labs, Seoul National University, and
-the University of California, San Diego. The McPAT paper can be found at
+the University of California, San Diego. The paper can be found at
 http://www.hpl.hp.com/research/mcpat/micro09.pdf.
-
 
 # INSTALLING, BUILDING and RUNNING GPGPU-Sim
 
@@ -263,7 +386,6 @@ To clean the docs run
 The documentation resides at doc/doxygen/html.
 
 To run Pytorch applications with the simulator, install the modified Pytorch library as well by following instructions [here](https://github.com/gpgpu-sim/pytorch-gpgpu-sim).
-
 ## Step 3: Run
 
 Before we run, we need to make sure the application's executable file is dynamically linked to CUDA runtime library. This can be done during compilation of your program by introducing the nvcc flag "--cudart shared" in makefile (quotes should be excluded).
@@ -314,16 +436,15 @@ need to re-compile your application simply to run it on GPGPU-Sim.
 To revert back to running on the hardware, remove GPGPU-Sim from your
 LD_LIBRARY_PATH environment variable.
 
-The following GPGPU-Sim configuration options are used to enable AccelWattch
+The following GPGPU-Sim configuration options are used to enable GPUWattch
 
 	-power_simulation_enabled 1 (1=Enabled, 0=Not enabled)
-	-power_simulation_mode 0 (0=AccelWattch_SASS_SIM or AccelWattch_PTX_SIM, 1=AccelWattch_SASS_HW, 2=AccelWattch_SASS_HYBRID)
-	-accelwattch_xml_file <filename>.xml
+	-gpuwattch_xml_file <filename>.xml
 
-The AccelWattch XML configuration file name is set to accelwattch_sass_sim.xml by default and is
-currently provided for SM7_QV100, SM7_TITANV, SM75_RTX2060_S, and SM6_TITANX. 
-Note that all these AccelWattch XML configuration files are tuned only for SM7_QV100. Please refer to
-<https://github.com/VijayKandiah/accel-sim-framework#accelwattch-overview> for more information.
+
+The GPUWattch XML configuration file name is set to gpuwattch.xml by default and
+currently only supplied for GTX480 (default=gpuwattch_gtx480.xml). Please refer to
+<http://gpgpu-sim.org/gpuwattch/> for more information.
 
 Running OpenCL applications is identical to running CUDA applications. However,
 OpenCL applications need to communicate with the NVIDIA driver in order to
