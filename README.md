@@ -99,7 +99,7 @@ sudo apt-get -y install cmake curl unzip tar libxi-dev libxinerama-dev libxcurso
 3. Copy GPGPU-Sim configurations to the binary directory
 ``` bash
 # Change <vulkan-sim-root> to your own path!
-cp <vulkan-sim-root>/vulkan-sim/configs/tested-cfgs/SM75_RTX2060/* build/linux/bin/.
+cp <vulkan-sim-root>/vulkan-sim/configs/tested-cfgs/treelet_prefetching/* build/linux/bin/.
 ```
 4. Run RayTracingInVulkan
 ``` bash
