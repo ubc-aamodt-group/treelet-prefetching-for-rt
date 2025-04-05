@@ -1474,7 +1474,7 @@ void VulkanRayTracing::remapBVHToTreeletLayout()
 {
     uint64_t treelet_remap_stride = (uint64_t)GPGPU_Context()->the_gpgpusim->g_the_gpu->get_m_cluster()[0]->get_m_core()[0]->get_config()->treelet_remap_stride;
 
-    treelet_layout_bvh = (uint8_t*)gpgpusim_malloc(treelet_roots_addr_only.size() * GPGPU_Context()->the_gpgpusim->g_the_gpu->get_config().max_treelet_size);
+    treelet_layout_bvh = (uint8_t*)gpgpusim_malloc(treelet_roots_addr_only.size() * (GPGPU_Context()->the_gpgpusim->g_the_gpu->get_config().max_treelet_size + treelet_remap_stride));
     assert(treelet_layout_bvh != NULL);
     assert(treelet_roots.size() == treelet_roots_addr_only.size());
 
